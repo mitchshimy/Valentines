@@ -1684,7 +1684,7 @@ body[data-theme="dark"] .screen::before {
       /* CLICK WHEEL - Touch friendly */
       .click-wheel {
         position: absolute;
-        width: 54% !important;
+        width: 65% !important;
         height: 32% !important;
         bottom: 10% !important;
         left: 50%;
@@ -1706,7 +1706,7 @@ body[data-theme="dark"] .screen::before {
       .wheel-btn {
         width: 22% !important;
         height: 22% !important;
-        font-size: clamp(1rem, 3.5vw, 1.3rem) !important;
+        font-size: clamp(1rem, 3.5vw, 1.4rem) !important;
       }
 
       .click-wheel::before {
