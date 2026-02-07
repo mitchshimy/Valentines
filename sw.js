@@ -4,6 +4,19 @@ const BG_CACHE = 'bgcache-v1';
 const MUSIC_CACHE = 'music-v1';
 let preferredMusicUrl = null;
 
+// Debug flag — set to false to silence runtime messages
+const SW_DEBUG = true;
+
+async function notifyClients(payload) {
+  if (!SW_DEBUG) return;
+  try {
+    const all = await self.clients.matchAll();
+    for (const c of all) {
+      try { c.postMessage(Object.assign({ type: 'sw-debug' }, payload)); } catch (e) {}
+    }
+  } catch (e) {}
+}
+
 // Simple IndexedDB helpers for storing small key/value pairs
 function openIDB() {
   return new Promise((resolve, reject) => {
@@ -135,8 +148,10 @@ self.addEventListener('fetch', event => {
             try {
               const putUrl = new URL(preferredMusicUrl, self.location.origin);
               if ((putUrl.protocol === 'http:' || putUrl.protocol === 'https:') && putUrl.origin === self.location.origin) {
-                await cache.put(preferredMusicUrl, resp.clone());
-              }
+                  await cache.put(preferredMusicUrl, resp.clone());
+                } else {
+                  notifyClients({ level: 'warn', msg: 'Skipped caching preferredMusic (origin/scheme)', url: preferredMusicUrl });
+                }
             } catch (e) {
               // skip caching for unsupported/invalid URLs
             }
@@ -163,6 +178,8 @@ self.addEventListener('fetch', event => {
             const reqUrl = new URL(event.request.url);
             if ((reqUrl.protocol === 'http:' || reqUrl.protocol === 'https:') && reqUrl.origin === self.location.origin) {
               caches.open(RUNTIME).then(cache => cache.put(event.request, responseClone));
+            } else {
+              notifyClients({ level: 'info', msg: 'Skipped runtime caching (non-same-origin or unsupported scheme)', url: event.request.url });
             }
           } catch (e) {
             // skip caching for unsupported schemes (e.g., chrome-extension://)
@@ -190,11 +207,15 @@ async function musicFirst(request) {
           const reqUrl = new URL(request.url);
           if ((reqUrl.protocol === 'http:' || reqUrl.protocol === 'https:') && reqUrl.origin === self.location.origin) {
             await musicCache.put(request, response.clone());
+          } else {
+            notifyClients({ level: 'warn', msg: 'Skipped MUSIC_CACHE.put (non-same-origin or unsupported scheme)', url: request.url });
           }
         } catch (e) {
           // skip caching if request URL is not acceptable
         }
       } catch (e) { /* ignore */ }
+    } else {
+      notifyClients({ level: 'warn', msg: 'Fetch returned non-cacheable status for musicFirst', url: request.url, status: response && response.status });
     }
     return response;
   } catch (e) {
@@ -246,6 +267,9 @@ async function prefetchPreferredMusic(url) {
           // skip caching for unsupported/invalid URLs
         }
       } catch (e) { }
+    }
+    else {
+      notifyClients({ level: 'warn', msg: 'Prefetch returned non-cacheable status', url });
     }
   } catch (e) {
     // ignore failures
