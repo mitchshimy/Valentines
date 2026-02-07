@@ -56,9 +56,9 @@
         quoteAuthor: "Shimy"
       },
       {
-        title: "With You",
+        title: "Residuals",
         artist: "Chris Brown",
-        audioUrl: "assets/music/withyou.mp3",
+        audioUrl: "assets/music/residuals.mp3",
         image: "assets/images/6.jpg",
         cardValue: "9",
         cardSuit: "♥",
@@ -91,6 +91,16 @@
         artist: "Kahuti ft Kinoti",
         audioUrl: "assets/music/feelthelove.mp3",
         image: "assets/images/8.jpg",
+        cardValue: "7",
+        cardSuit: "♥",
+        quote: "I hate to see her go but I love to watch her leave",
+        quoteAuthor: "Lil Wayne"
+      },
+            {
+        title: "Najuta",
+        artist: "Sanaipei Tande",
+        audioUrl: "assets/music/najuta.mp3",
+        image: "assets/images/9.jpg",
         cardValue: "7",
         cardSuit: "♥",
         quote: "I hate to see her go but I love to watch her leave",

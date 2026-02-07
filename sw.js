@@ -77,20 +77,18 @@ async function cacheRestAssets() {
     'assets/images/9.jpg',
     'assets/images/16400503_v722-aum-36b.jpg',
     'assets/images/2151930103.jpg',
-    'assets/images/kakashi.jpeg',
     'assets/images/landscape.jpg',
-    'assets/images/landscape1.jpg',
     'assets/images/background-dark.mp4',
 
     // music (exclude already precached first track)
     'assets/music/noonelikeyou.mp3',
     'assets/music/itsyou.mp3',
     'assets/music/happyyouremine.mp3',
-    'assets/music/withyou.mp3',
     'assets/music/feelmylove.mp3',
     'assets/music/littlethings.mp3',
     'assets/music/feelthelove.mp3',
-    'assets/music/residuals.mp3'
+    'assets/music/residuals.mp3',
+    'assets/music/najuta.mp3'
   ];
 
   try {
