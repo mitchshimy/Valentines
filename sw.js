@@ -307,6 +307,30 @@ async function cacheRestAssets() {
   try {
     const bgCache = await caches.open(BG_CACHE);
     const musicCache = await caches.open(MUSIC_CACHE);
+
+    // Immediately prefetch preferred music and a small priority music set
+    try {
+      const musicAssets = assets.filter(a => a.startsWith('assets/music/'));
+      const priority = [];
+      if (preferredMusicUrl) priority.push(preferredMusicUrl.replace(self.location.origin + '/', '').replace(self.location.origin, ''));
+      // take first two music assets as priority (if available)
+      for (let i = 0; i < Math.min(2, musicAssets.length); i++) priority.push(musicAssets[i]);
+
+      // Deduplicate and prefetch without stagger so music caching starts immediately
+      const dedup = Array.from(new Set(priority)).filter(Boolean);
+      for (const m of dedup) {
+        try {
+          await musicCache.add(m);
+          notifyClients({ level: 'info', msg: 'Prefetched priority music', url: m });
+        } catch (e) {
+          notifyClients({ level: 'warn', msg: 'Priority music prefetch failed', url: m });
+        }
+      }
+    } catch (e) {
+      // ignore priority prefetch failures
+    }
+
+    // Then continue with background caching (staggered) for remaining assets
     for (const asset of assets) {
       try {
         // Slight stagger to avoid network burst
