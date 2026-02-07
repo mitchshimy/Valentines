@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>From Me to You</title>
+    <link rel="stylesheet" type="text/css" href="letter-styles.css">
+</head>
+<body>
+<!-- Flex container holding both the content and the envelope -->
+<div class="container">
+    <!-- Content div (text or message) -->
+    <div class="content">
+        <span>❤</span>
+        <h1>Laura Nyanza</h1>
+        <p>I'm so happy to send you this little surprise.</p>
+        <p>Hope this brings a smile to your face😊</p>
+        <p>Click on the envelope to see it unfold</p>
+    </div>
+
+    <!-- Envelope div -->
+    <div class="letter-image" onclick="revealLetter()">
+        <div class="animated-mail">
+            <div class="back-fold"></div>
+            <div class="letter">
+                <div class="letter-border"></div>
+                <div class="letter-title"></div>
+                <div class="letter-context"></div>
+                <div class="letter-stamp">
+                    <div class="letter-stamp-inner"></div>
+                </div>
+            </div>
+            <div class="top-fold"></div>
+            <div class="body"></div>
+            <div class="left-fold"></div>
+        </div>
+        <div class="shadow"></div>
+        <div class="letter-content">
+            <!-- Empty paragraphs that will be filled by typing animation -->
+            <p></p>
+            <p></p>
+            <p></p>
+            <p></p>
+            <p></p>
+            <p></p>
+            <p></p>
+            <p></p>
+            <p></p>
+            <div class="wax-seal">❤️</div>
+        </div>
+    </div>
+</div>
+
+<script type="text/javascript" src="letter.js"></script>
+
+</body>
+</html>

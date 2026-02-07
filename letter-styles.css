@@ -1,0 +1,259 @@
+/* ================= Body & Background ================= */
+body {
+    font-family: 'Merriweather', serif;
+    background: url(assets/images/landscape.jpg) no-repeat center center fixed;
+    background-size: cover;
+    min-height: 100vh;
+    color: #fff;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    margin: 0;
+    transition: opacity 1s ease;
+}
+
+body::before {
+    content: '';
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: -1;
+}
+
+/* ================= Container & Layout ================= */
+.container {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 80%;
+    max-width: 1200px;
+    height: 300px;
+}
+
+@media (max-width: 768px) {
+    .container {
+        flex-direction: column;
+        height: auto;
+    }
+}
+
+/* ================= Content Box ================= */
+.content {
+    position: relative;
+    text-align: center;
+    background: rgba(0, 0, 0, 0.6);
+    padding: 40px;
+    border-radius: 20px;
+    box-shadow: 0px 4px 20px rgba(0, 0, 0, 0.3);
+    max-width: 500px;
+    width: 90%;
+}
+
+.content h1 {
+    font-family: 'Pacifico', cursive;
+    font-size: 3em;
+    color: #fff;
+    text-shadow: 3px 3px 6px rgba(0,0,0,0.4);
+    margin-bottom: 20px;
+    animation: fadeIn 1.5s ease-in-out;
+}
+
+.content p {
+    font-size: 1.2em;
+    line-height: 1.5;
+    margin-bottom: 10px;
+    text-shadow: 2px 2px 5px rgba(0,0,0,0.3);
+    animation: fadeIn 2s ease-in-out;
+}
+
+.content p:nth-child(odd) { color: #ff80a0; }
+.content p:nth-child(even) { color: #ffb3e6; }
+
+/* Gradient animated span inside content */
+.content span {
+    font-size: 3.4rem;
+    background: linear-gradient(45deg, #FF6347, #FF1493, #8A2BE2, #00FA9A);
+    background-size: 400% 400%;
+    color: transparent;
+    -webkit-background-clip: text;
+    animation: gradientMove 3s ease infinite;
+}
+
+@media (max-width: 768px) {
+    .content {
+        padding: 20px;
+        margin-bottom: 20px;
+        background: rgba(0,0,0,0.5);
+    }
+}
+
+/* ================= Envelope ================= */
+.letter-image {
+    display: block;
+    position: relative;
+    width: 200px; height: 200px;
+    cursor: pointer;
+}
+
+.animated-mail { position: absolute; width: 200px; height: 150px; transition: .4s; }
+
+.body {
+    position: absolute; bottom: 0;
+    width: 0; height: 0;
+    border-style: solid;
+    border-width: 0 0 100px 200px;
+    border-color: transparent transparent #e95f55 transparent;
+    z-index: 2;
+}
+
+.top-fold {
+    position: absolute; top: 50px;
+    width: 0; height: 0;
+    border-style: solid;
+    border-width: 50px 100px 0 100px;
+    transform-origin: 50% 0%;
+    transition: transform .4s .4s, z-index .2s .4s;
+    border-color: #cf4a43 transparent transparent transparent;
+    z-index: 2;
+}
+
+.back-fold {
+    position: absolute; bottom: 0;
+    width: 200px; height: 100px;
+    background: #cf4a43; z-index: 0;
+}
+
+.left-fold {
+    position: absolute; bottom: 0;
+    width: 0; height: 0;
+    border-style: solid;
+    border-width: 50px 0 50px 100px;
+    border-color: transparent transparent transparent #e15349;
+    z-index: 2;
+}
+
+.letter {
+    position: absolute; left: 20px; bottom: 0;
+    width: 160px; height: 60px;
+    background: white; z-index: 1;
+    overflow: hidden; transition: .4s .2s;
+}
+
+.letter-border {
+    height: 10px; width: 100%;
+    background: repeating-linear-gradient(-45deg,#cb5a5e,#cb5a5e 8px,transparent 8px,transparent 18px);
+}
+
+.letter-title { margin: 10px 0 0 5px; height: 10px; width: 40%; background: #cb5a5e; }
+.letter-context { margin: 10px 0 0 5px; height: 10px; width: 20%; background: #cb5a5e; }
+.letter-stamp { position: absolute; top: 30px; left: 120px; width: 30px; height: 30px; border-radius: 50%; background: #cb5a5e; opacity: 0.3; }
+
+.shadow {
+    position: absolute; top: 200px; left: 50%;
+    width: 400px; height: 30px;
+    transform: translateX(-50%);
+    border-radius: 100%;
+    background: radial-gradient(rgba(0,0,0,0.5), rgba(0,0,0,0), rgba(0,0,0,0));
+    transition: .4s;
+}
+
+.letter-image:hover .animated-mail { transform: translateY(50px); }
+.letter-image:hover .top-fold { transform: rotateX(180deg); z-index:0; transition: transform .4s, z-index .2s; }
+.letter-image:hover .letter { height: 180px; }
+.letter-image:hover .shadow { width: 250px; }
+
+/* ================= Letter Content ================= */
+.letter-content {
+    display: none;
+    position: fixed; top: 50%; left: 50%;
+    transform: translate(-50%, -50%) scale(0);
+    width: 80%; max-width: 600px; height: 80vh;
+    background: linear-gradient(to bottom,#fffaf0,#f9e8c8);
+    padding: 30px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    border-radius: 15px;
+    overflow-y: auto;
+    border: 5px solid #d4af37;
+    font-size: 1.1em; line-height: 1.6;
+    z-index: 2;
+    transition: transform 1s ease-out, opacity 1s ease-out;
+}
+
+.show-letter .letter-content { display: block; transform: translate(-50%, -50%) scale(1); }
+
+.letter-content p { color:#3a1c1a; text-align: justify; margin-bottom: 15px; min-height: 1.2em; }
+.letter-content p:first-child { font-family:'Dancing Script',cursive;font-size:1.8em;font-weight:bold;color:#8b0000;text-align:center; }
+.letter-content p:last-child { font-style:italic;font-weight:bold;color:#7b4b3a;text-align:right; }
+.letter-content p span { color:#b22222;font-weight:bold; }
+
+.letter-content::-webkit-scrollbar { width: 8px; }
+.letter-content::-webkit-scrollbar-thumb { background:#d4af37; border-radius:10px; }
+
+/* ================= Wax Seal ================= */
+.wax-seal {
+    width:50px; height:50px; border-radius:50%;
+    background:#a52a2a;
+    position:absolute; top:8px; right:-2%;
+    transform:translateX(-50%);
+    display:flex; align-items:center; justify-content:center;
+    font-family:'Dancing Script',cursive; font-size:20px; font-weight:bold;
+    color:#fff; box-shadow:0 2px 10px rgba(0,0,0,0.2); cursor:pointer;
+}
+
+/* ================= Typing Cursor ================= */
+.typing-cursor { display:inline-block; font-weight:bold; color:#8b0000; animation: blink 1s infinite; }
+@keyframes blink { 0%,100%{opacity:1;} 50%{opacity:0;} }
+
+/* ================= Continue Buttons ================= */
+.continue-button, .content-continue-button {
+    display:flex; align-items:center; gap:8px;
+    border-radius:30px; font-family:'Dancing Script',cursive; font-weight:bold;
+    cursor:pointer; box-shadow:0 3px 10px rgba(0,0,0,0.15);
+    transition: all 0.3s ease;
+}
+
+.continue-button {
+    position:absolute; top:20px; left:20px;
+    background: rgba(255,255,255,0.95); color:#8b0000; border:2px solid #d4af37;
+    padding:10px 20px; font-size:1rem; z-index:1000;
+}
+
+.content-continue-button {
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    background: rgba(255, 255, 255, 0.95);
+    color: #8b0000;
+    border: 2px solid #d4af37;
+    padding: 12px 25px;
+    border-radius: 30px;
+    cursor: pointer;
+    font-size: 1.1rem;
+    font-family: 'Dancing Script', cursive;
+    font-weight: bold;
+    box-shadow: 0 3px 10px rgba(0,0,0,0.15);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+    z-index: 1;
+
+    animation: pulse 2s infinite; /* always pulsing */
+    animation-fill-mode: both;
+}
+
+.continue-button:hover, .content-continue-button:hover { background:#fff; transform:translateY(-2px); border-color:#8b0000; box-shadow:0 5px 15px rgba(0,0,0,0.2); }
+.continue-button:active, .content-continue-button:active { transform:scale(0.98); }
+
+@media (max-width: 768px) {
+    .continue-button { width:auto; height:20px; padding:12px 5px; font-size:1em; }
+    .content-continue-button { top:15px; right:15px; padding:10px 20px; font-size:1em; }
+}
+
+/* ================= Animations ================= */
+@keyframes fadeIn { from{opacity:0; transform:translateY(20px);} to{opacity:1; transform:translateY(0);} }
+@keyframes gradientMove { 0%{background-position:0% 50%;} 50%{background-position:100% 50%;} 100%{background-position:0% 50%;} }
+@keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(139,0,0,0.4);} 70%{box-shadow:0 0 0 10px rgba(139,0,0,0);} 100%{box-shadow:0 0 0 0 rgba(139,0,0,0);} }
