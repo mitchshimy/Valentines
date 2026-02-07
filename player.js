@@ -96,7 +96,7 @@
         quote: "I hate to see her go but I love to watch her leave",
         quoteAuthor: "Lil Wayne"
       },
-            {
+      {
         title: "Najuta",
         artist: "Sanaipei Tande",
         audioUrl: "assets/music/najuta.mp3",
@@ -1367,3 +1367,58 @@ audioPlayer.addEventListener('error', function(e) {
         }, 150);
       });
     });
+
+    // Notify service worker of preferred music (read from localStorage) and keep it updated
+    (function() {
+      if (!('serviceWorker' in navigator)) return;
+
+      function postToSW(msg) {
+        try {
+          if (navigator.serviceWorker.controller) {
+            navigator.serviceWorker.controller.postMessage(msg);
+          } else {
+            navigator.serviceWorker.ready.then(reg => {
+              if (reg.active) reg.active.postMessage(msg);
+            }).catch(() => {});
+          }
+        } catch (e) {}
+      }
+
+      function sendPreferredFromState() {
+        try {
+          const saved = localStorage.getItem('musicPlayerState');
+          let url = null;
+          if (saved) {
+            const state = JSON.parse(saved);
+            if (state.currentSongIndex !== undefined && musicLibrary[state.currentSongIndex]) {
+              url = musicLibrary[state.currentSongIndex].audioUrl;
+            }
+          }
+          // fallback to first track if nothing saved
+          if (!url && musicLibrary && musicLibrary[0]) url = musicLibrary[0].audioUrl;
+          if (url) postToSW({ type: 'set-preferred-music', url });
+        } catch (e) {}
+      }
+
+      // Try sending once after initialization
+      setTimeout(sendPreferredFromState, 900);
+
+      // Keep SW updated when audioPlayer starts playing or metadata loads
+      (function attachAudioListeners() {
+        if (typeof audioPlayer !== 'undefined' && audioPlayer) {
+          audioPlayer.addEventListener('play', () => {
+            if (audioPlayer.src) postToSW({ type: 'set-preferred-music', url: audioPlayer.src });
+          });
+          audioPlayer.addEventListener('loadedmetadata', () => {
+            if (audioPlayer.src) postToSW({ type: 'set-preferred-music', url: audioPlayer.src });
+          });
+        } else {
+          setTimeout(attachAudioListeners, 600);
+        }
+      })();
+
+      // When the SW controller changes (new SW), resend preferred
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        setTimeout(sendPreferredFromState, 500);
+      });
+    })();

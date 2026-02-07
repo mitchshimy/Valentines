@@ -1,6 +1,8 @@
 const PRECACHE = 'precache-v1';
 const RUNTIME = 'runtime-v1';
 const BG_CACHE = 'bgcache-v1';
+const MUSIC_CACHE = 'music-v1';
+let preferredMusicUrl = null;
 
 const PRECACHE_URLS = [
   '/',
@@ -28,7 +30,7 @@ self.addEventListener('activate', event => {
   event.waitUntil(
     caches.keys().then(keys => Promise.all(
       keys.map(key => {
-        if (key !== PRECACHE && key !== RUNTIME && key !== BG_CACHE) {
+        if (key !== PRECACHE && key !== RUNTIME && key !== BG_CACHE && key !== MUSIC_CACHE) {
           return caches.delete(key);
         }
         return Promise.resolve();
@@ -37,31 +39,144 @@ self.addEventListener('activate', event => {
   );
   self.clients.claim();
 });
-
 self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
 
-  // Try cache first, then network, and cache runtime responses
+  const url = new URL(event.request.url);
+
+  // Prioritize music files: try MUSIC_CACHE first, then network, then runtime cache
+  if (url.pathname.startsWith('/assets/music/')) {
+    event.respondWith(musicFirst(event.request));
+    return;
+  }
+
+  // If the page requests a virtual 'current-music' path, return the preferred track if available
+  if (url.pathname === '/current-music' && preferredMusicUrl) {
+    event.respondWith((async () => {
+      const cache = await caches.open(MUSIC_CACHE);
+      const cached = await cache.match(preferredMusicUrl);
+      if (cached) return cached;
+      try {
+        const resp = await fetch(preferredMusicUrl);
+        if (resp && resp.status === 200) {
+          try {
+            try {
+              const putUrl = new URL(preferredMusicUrl, self.location.origin);
+              if ((putUrl.protocol === 'http:' || putUrl.protocol === 'https:') && putUrl.origin === self.location.origin) {
+                await cache.put(preferredMusicUrl, resp.clone());
+              }
+            } catch (e) {
+              // skip caching for unsupported/invalid URLs
+            }
+          } catch (e) {}
+        }
+        return resp;
+      } catch (e) {
+        return caches.match(preferredMusicUrl) || new Response('', { status: 503 });
+      }
+    })());
+    return;
+  }
+
+  // Default: cache-first then network, cache runtime responses
   event.respondWith(
     caches.match(event.request).then(cached => {
       if (cached) return cached;
       return fetch(event.request).then(response => {
-        // Only cache same-origin GET requests
-        if (!response || response.status !== 200 || response.type === 'opaque') return response;
-        const responseClone = response.clone();
-        caches.open(RUNTIME).then(cache => cache.put(event.request, responseClone));
+        if (!response || response.status !== 200) return response;
+        // Don't cache opaque responses (cross-origin) into runtime
+        try {
+          const responseClone = response.clone();
+          try {
+            const reqUrl = new URL(event.request.url);
+            if ((reqUrl.protocol === 'http:' || reqUrl.protocol === 'https:') && reqUrl.origin === self.location.origin) {
+              caches.open(RUNTIME).then(cache => cache.put(event.request, responseClone));
+            }
+          } catch (e) {
+            // skip caching for unsupported schemes (e.g., chrome-extension://)
+          }
+        } catch (e) {
+          // ignore
+        }
         return response;
       }).catch(() => cached);
     })
   );
 });
 
+async function musicFirst(request) {
+  try {
+    const cache = await caches.open(MUSIC_CACHE);
+    // Try cache first
+    const cached = await cache.match(request);
+    if (cached) return cached;
+
+    // Otherwise fetch from network and store into music cache
+    const response = await fetch(request);
+    if (response && response.status === 200) {
+      try {
+        try {
+          const reqUrl = new URL(request.url);
+          if ((reqUrl.protocol === 'http:' || reqUrl.protocol === 'https:') && reqUrl.origin === self.location.origin) {
+            await cache.put(request, response.clone());
+          }
+        } catch (e) {
+          // skip caching if request URL is not acceptable
+        }
+      } catch (e) { /* ignore */ }
+    }
+    return response;
+  } catch (e) {
+    // On error, fall back to runtime or precache
+    const fallback = await caches.match(request);
+    return fallback || new Response('', { status: 503, statusText: 'Service Unavailable' });
+  }
+}
+
 self.addEventListener('message', event => {
   if (!event.data) return;
   if (event.data.type === 'cache-rest') {
     cacheRestAssets();
+    return;
+  }
+
+  // Allow clients to tell the SW which music file should be prioritized
+  if (event.data.type === 'set-preferred-music' && event.data.url) {
+    preferredMusicUrl = event.data.url;
+    // prefetch and cache it into MUSIC_CACHE for immediate availability
+    prefetchPreferredMusic(preferredMusicUrl);
+    return;
+  }
+
+  if (event.data.type === 'clear-preferred-music') {
+    preferredMusicUrl = null;
+    return;
   }
 });
+
+async function prefetchPreferredMusic(url) {
+  try {
+    const cache = await caches.open(MUSIC_CACHE);
+    // Already cached?
+    const existing = await cache.match(url);
+    if (existing) return;
+    const resp = await fetch(url);
+    if (resp && resp.status === 200) {
+      try {
+        try {
+          const putUrl = new URL(url, self.location.origin);
+          if ((putUrl.protocol === 'http:' || putUrl.protocol === 'https:') && putUrl.origin === self.location.origin) {
+            await cache.put(url, resp.clone());
+          }
+        } catch (e) {
+          // skip caching for unsupported/invalid URLs
+        }
+      } catch (e) { }
+    }
+  } catch (e) {
+    // ignore failures
+  }
+}
 
 async function cacheRestAssets() {
   const assets = [

@@ -1902,6 +1902,7 @@ body:not([data-theme="dark"]) .ipod {
         }
       }
     }
+    
 
     /* ====== DESKTOP (1025px - 1199px) ====== */
     @media (min-width: 1025px) and (max-width: 1199px) {
