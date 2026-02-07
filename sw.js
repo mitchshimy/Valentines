@@ -307,40 +307,57 @@ async function cacheRestAssets() {
   try {
     const bgCache = await caches.open(BG_CACHE);
     const musicCache = await caches.open(MUSIC_CACHE);
-
     // Immediately prefetch preferred music and a small priority music set
-    try {
-      const musicAssets = assets.filter(a => a.startsWith('assets/music/'));
-      const priority = [];
-      if (preferredMusicUrl) priority.push(preferredMusicUrl.replace(self.location.origin + '/', '').replace(self.location.origin, ''));
-      // take first two music assets as priority (if available)
-      for (let i = 0; i < Math.min(2, musicAssets.length); i++) priority.push(musicAssets[i]);
+    const musicAssets = assets.filter(a => a.startsWith('assets/music/'));
+    const priority = [];
+    if (preferredMusicUrl) {
+      // normalize stored URL to relative path if possible
+      try {
+        const u = new URL(preferredMusicUrl, self.location.origin);
+        priority.push(u.pathname.replace(/^[\/]/, ''));
+      } catch (e) {
+        if (preferredMusicUrl) priority.push(preferredMusicUrl);
+      }
+    }
+    for (let i = 0; i < Math.min(2, musicAssets.length); i++) priority.push(musicAssets[i]);
 
-      // Deduplicate and prefetch without stagger so music caching starts immediately
-      const dedup = Array.from(new Set(priority)).filter(Boolean);
-      for (const m of dedup) {
+    const dedupPriority = Array.from(new Set(priority)).filter(Boolean);
+
+    // Prefetch priority music without stagger (in parallel)
+    await Promise.all(dedupPriority.map(async m => {
+      try {
+        await musicCache.add(m);
+        notifyClients({ level: 'info', msg: 'Prefetched priority music', url: m });
+      } catch (e) {
+        notifyClients({ level: 'warn', msg: 'Priority music prefetch failed', url: m });
+      }
+    }));
+
+    // For the remaining music assets, run a small concurrency pool so music caching proceeds faster
+    const remainingMusic = musicAssets.filter(a => !dedupPriority.includes(a));
+    const concurrency = 3; // number of parallel music fetches
+    let idx = 0;
+    async function worker() {
+      while (idx < remainingMusic.length) {
+        const i = idx++;
+        const m = remainingMusic[i];
         try {
           await musicCache.add(m);
-          notifyClients({ level: 'info', msg: 'Prefetched priority music', url: m });
+          notifyClients({ level: 'info', msg: 'Cached music', url: m });
         } catch (e) {
-          notifyClients({ level: 'warn', msg: 'Priority music prefetch failed', url: m });
+          notifyClients({ level: 'warn', msg: 'Music cache failed', url: m });
         }
       }
-    } catch (e) {
-      // ignore priority prefetch failures
     }
+    await Promise.all(new Array(Math.min(concurrency, remainingMusic.length)).fill(0).map(() => worker()));
 
-    // Then continue with background caching (staggered) for remaining assets
+    // Then continue with background caching (staggered) for non-music assets
     for (const asset of assets) {
+      if (asset.startsWith('assets/music/')) continue; // already handled
       try {
-        // Slight stagger to avoid network burst
+        // Slight stagger to avoid network burst for images/videos
         await new Promise(r => setTimeout(r, 150));
-        if (asset.startsWith('assets/music/')) {
-          // store music into MUSIC_CACHE (priority)
-          try { await musicCache.add(asset); } catch (e) { /* ignore individual music failures */ }
-        } else {
-          try { await bgCache.add(asset); } catch (e) { /* ignore individual failures */ }
-        }
+        try { await bgCache.add(asset); } catch (e) { /* ignore individual failures */ }
       } catch (e) {
         // ignore individual failures
       }
