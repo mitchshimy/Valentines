@@ -6,14 +6,13 @@
     let currentSongIndex = 0;
     let currentTime = 0;
     let totalTime = 0;
-    let playInterval = null;
     let cards = [];
     let audioDurations = {};
     let isPlaylistOpen = false;
     let isQuotesMode = false;
     let isMobileView = false;
 
-    // Music Library
+    // Music Library (treat as immutable source of truth)
     const musicLibrary = [
       {
         title: "Chikwere",
@@ -108,10 +107,43 @@
       },
     ];
 
+    // Keep an immutable copy reference (original indices are canonical)
+    const originalLibrary = musicLibrary.slice();
+
+    // displayOrder maps display index -> originalLibrary index
+    // Do NOT mutate originalLibrary; change displayOrder to reorder UI only
+    let displayOrder = originalLibrary.map((_, i) => i);
+
+    // Current track identity and player helpers
+    let currentTrackId = null; // canonical id (audioUrl)
+    let pendingSeekTime = null; // used to seek once metadata loads
+    let audioListenersAttached = false;
+    let lastSentPreferredMusicUrl = null; // dedupe SW messages
+
+    function getTrackByDisplayIndex(displayIndex) {
+      const origIdx = displayOrder[displayIndex];
+      return originalLibrary[origIdx];
+    }
+
+    function findDisplayIndexByTrackId(trackId) {
+      const origIdx = originalLibrary.findIndex(t => t.audioUrl === trackId);
+      if (origIdx === -1) return -1;
+      return displayOrder.indexOf(origIdx);
+    }
+
+    function isValidDisplayOrder(arr) {
+      if (!Array.isArray(arr) || arr.length !== originalLibrary.length) return false;
+      const sorted = arr.slice().sort((a,b)=>a-b);
+      for (let i=0;i<sorted.length;i++) if (sorted[i] !== i) return false;
+      return true;
+    }
+
   // ====== LOCAL STORAGE FUNCTIONS ======
 function savePlayerState() {
   const playerState = {
-    currentSongIndex: currentSongIndex,
+    // Persist canonical identity (trackId) and display ordering
+    currentTrackId: currentTrackId || (getTrackByDisplayIndex(currentSongIndex) || {}).audioUrl,
+    displayOrder: displayOrder.slice(),
     currentTime: currentTime,
     isPlaying: isPlaying,
     isPowerOn: isPowerOn,
@@ -154,39 +186,37 @@ function loadPlayerState() {
         }
       }
       
-      // Load song position
-      if (state.currentSongIndex !== undefined) {
-        currentSongIndex = state.currentSongIndex;
+      // Restore displayOrder if present and valid
+      if (state.displayOrder && isValidDisplayOrder(state.displayOrder)) {
+        displayOrder = state.displayOrder.slice();
+      }
+
+      // Load song position by canonical id (use central setTrack to keep UI consistent)
+      if (state.currentTrackId !== undefined) {
+        const foundDisplayIndex = findDisplayIndexByTrackId(state.currentTrackId);
+        const targetIndex = foundDisplayIndex !== -1 ? foundDisplayIndex : 0;
+        currentTrackId = state.currentTrackId;
         currentTime = state.currentTime || 0;
-        
-        // Update display immediately
-        updateSongDisplay();
-        createCardDeck();
-        updateQuoteFromSong();
-        
-        // Load the audio
-        const song = musicLibrary[currentSongIndex];
+
+        // Ensure deck exists so setTrack/updateCardDeck can operate
+        if (!cards || cards.length === 0) createCardDeck();
+
+        // Set track without forcing play and preserve saved time
+        setTrack(targetIndex, { forcePlay: false, resetTime: false });
+
+        const song = getTrackByDisplayIndex(targetIndex);
         if (song) {
+          // Ensure audio src is set so pendingSeekTime can be applied by the centralized listener
           audioPlayer.src = song.audioUrl;
-          
-          // Set playback position
-          audioPlayer.addEventListener('loadedmetadata', function onLoad() {
-            if (currentTime < audioPlayer.duration) {
-              audioPlayer.currentTime = currentTime;
-            }
-            
-            // Restore playback state - MODIFIED TO CHECK isPowerOn
-            if (state.isPlaying && isPowerOn) {
-              setTimeout(() => {
-                playSong();
-              }, 500);
-            }
-            
-            audioPlayer.removeEventListener('loadedmetadata', onLoad);
-          }, { once: true });
-          
-          // Update progress bar immediately
+          pendingSeekTime = currentTime;
           updateProgressBar();
+
+          // Restore playback state after a short delay if required
+          if (state.isPlaying && isPowerOn) {
+            setTimeout(() => {
+              playSong(true);
+            }, 500);
+          }
         }
       }
       
@@ -219,16 +249,31 @@ function forceAutoplay() {
   if (savedState) {
     try {
       const state = JSON.parse(savedState);
-      if (state.currentSongIndex !== undefined) {
+      // Prefer canonical id if available
+      if (state.currentTrackId) {
+        const found = findDisplayIndexByTrackId(state.currentTrackId);
+        currentSongIndex = found !== -1 ? found : 0;
+        currentTrackId = state.currentTrackId;
+        currentTime = state.currentTime || 0;
+        updateSongDisplay();
+        createCardDeck();
+        updateQuoteFromSong();
+        const song = getTrackByDisplayIndex(currentSongIndex);
+        if (song) {
+          audioPlayer.src = song.audioUrl;
+          pendingSeekTime = currentTime;
+        }
+      } else if (state.currentSongIndex !== undefined) {
         currentSongIndex = state.currentSongIndex;
         currentTime = state.currentTime || 0;
         updateSongDisplay();
         createCardDeck();
         updateQuoteFromSong();
-        
-        const song = musicLibrary[currentSongIndex];
+        const song = getTrackByDisplayIndex(currentSongIndex);
         if (song) {
           audioPlayer.src = song.audioUrl;
+          pendingSeekTime = currentTime;
+          currentTrackId = song.audioUrl;
         }
       }
     } catch (error) {
@@ -237,6 +282,38 @@ function forceAutoplay() {
   }
   
   // Force play regardless of previous state
+  // Before attempting autoplay, restore saved track selection safely using setTrack
+  try {
+    if (savedState) {
+      const state = JSON.parse(savedState);
+      if (state.currentTrackId) {
+        const found = findDisplayIndexByTrackId(state.currentTrackId);
+        const target = found !== -1 ? found : 0;
+        currentTime = state.currentTime || 0;
+        if (!cards || cards.length === 0) createCardDeck();
+        setTrack(target, { forcePlay: false, resetTime: false });
+        const song = getTrackByDisplayIndex(target);
+        if (song) {
+          audioPlayer.src = song.audioUrl;
+          pendingSeekTime = currentTime;
+        }
+      } else if (state.currentSongIndex !== undefined) {
+        const idx = state.currentSongIndex;
+        currentTime = state.currentTime || 0;
+        if (!cards || cards.length === 0) createCardDeck();
+        setTrack(idx, { forcePlay: false, resetTime: false });
+        const song = getTrackByDisplayIndex(idx);
+        if (song) {
+          audioPlayer.src = song.audioUrl;
+          pendingSeekTime = currentTime;
+          currentTrackId = song.audioUrl;
+        }
+      }
+    }
+  } catch (e) {
+    console.error("Error restoring saved state for autoplay:", e);
+  }
+
   const playPromise = audioPlayer.play();
   
   if (playPromise !== undefined) {
@@ -244,9 +321,8 @@ function forceAutoplay() {
       isPlaying = true;
       const playIcon = document.getElementById('playIcon');
       if (playIcon) playIcon.className = 'fas fa-pause';
-      
-      clearInterval(playInterval);
-      playInterval = setInterval(updateProgressBar, 1000);
+      // Update progress UI immediately; ongoing updates come from 'timeupdate'
+      updateProgressBar();
       savePlayerState();
     }).catch(error => {
       console.log("Autoplay blocked. Waiting for user interaction...");
@@ -256,7 +332,7 @@ function forceAutoplay() {
       
       // Add a click handler to start playback on first user interaction
       const startOnInteraction = () => {
-        playSong();
+        playSong(true);
         document.removeEventListener('click', startOnInteraction);
       };
       document.addEventListener('click', startOnInteraction, { once: true });
@@ -270,21 +346,6 @@ function clearPlayerState() {
 
 // Auto-save on various events
 function setupAutoSave() {
-  // Save on play/pause
-  audioPlayer.addEventListener('play', savePlayerState);
-  audioPlayer.addEventListener('pause', savePlayerState);
-  
-  // Save on song change
-  audioPlayer.addEventListener('ended', savePlayerState);
-  
-  // Save on time update (throttled)
-  let saveTimeout;
-  audioPlayer.addEventListener('timeupdate', () => {
-    clearTimeout(saveTimeout);
-    saveTimeout = setTimeout(savePlayerState, 2000); // Save every 2 seconds during playback
-  });
-  
-  
   // Save before page unload
   window.addEventListener('beforeunload', savePlayerState);
   
@@ -341,7 +402,7 @@ function typeText(element, text, speed = 120, callback = null) {
         // Variable speed for regular characters
         nextSpeed = speed + (Math.random() * 80 - 40); // More variation
       }
-      
+        
       // Add occasional longer pauses for dramatic effect
       if (i % Math.floor(Math.random() * 10 + 15) === 0) {
         nextSpeed = speed * 4;
@@ -608,7 +669,7 @@ function toggleQuotesMode() {
     }
     
     // Type the quote on mobile
-    const song = musicLibrary[currentSongIndex];
+    const song = getTrackByDisplayIndex(currentSongIndex);
     showQuoteInScreen();
     
     // Trigger typing animation after a short delay
@@ -643,42 +704,207 @@ function toggleQuotesMode() {
 function showQuoteInScreen() {
   const screenContent = document.querySelector('.screen-content');
   if (!screenContent) return;
-  
-  const song = musicLibrary[currentSongIndex];
-  screenContent.innerHTML = `
-    <div class="song-info" style="display: none;"></div>
-    <div class="ipod-quote-text" style="color: rgba(11,1,38 0.9); font-family: 'Source Code Pro', monospace; text-align: left; padding: 20px;">Typing...</div>
-    <div class="ipod-quote-author" style="color: rgba(0, 255, 128, 0.8); font-family: 'Source Code Pro', monospace; text-align: left; padding: 0 20px;"></div>
-  `;
+
+  // Ensure necessary elements exist and reuse them
+  ensureScreenElements();
+
+  // Hide song-info, show quote areas
+  const songInfo = screenContent.querySelector('.song-info');
+  if (songInfo) songInfo.style.display = 'none';
+
+  const ipodQuoteText = screenContent.querySelector('.ipod-quote-text');
+  const ipodQuoteAuthor = screenContent.querySelector('.ipod-quote-author');
+  if (ipodQuoteText) {
+    ipodQuoteText.style.display = '';
+    ipodQuoteText.textContent = 'Typing...';
+  }
+  if (ipodQuoteAuthor) {
+    ipodQuoteAuthor.style.display = '';
+    ipodQuoteAuthor.textContent = '';
+  }
 }
 
     function showSongInfoInScreen() {
       const screenContent = document.querySelector('.screen-content');
       if (!screenContent) return;
-      
-      const song = musicLibrary[currentSongIndex];
-      screenContent.innerHTML = `
-        <div class="song-info">
-          <div class="song-title">${song.title}</div>
-          <div class="song-artist">${song.artist}</div>
-          
-          <div class="progress-container">
-            <div class="progress-bar" id="progressBarContainer">
-              <div class="progress" id="progressBar"></div>
-            </div>
-            <div class="time-info">
-              <span id="currentTime">${formatTime(currentTime)}</span>
-              <span id="totalTime">${formatTime(totalTime)}</span>
-            </div>
-          </div>
-        </div>
-      `;
-      
-      // Re-attach progress bar event
-      const progressBarContainer = document.getElementById('progressBarContainer');
-      if (progressBarContainer) {
-        progressBarContainer.addEventListener('click', handleProgressBarClick);
+
+      ensureScreenElements();
+
+      // When showing song info, ensure quote areas are hidden
+      const song = getTrackByDisplayIndex(currentSongIndex);
+      const songInfo = screenContent.querySelector('.song-info');
+      if (!songInfo) return;
+      const ipodQuoteText = screenContent.querySelector('.ipod-quote-text');
+      const ipodQuoteAuthor = screenContent.querySelector('.ipod-quote-author');
+      if (ipodQuoteText) { ipodQuoteText.style.display = 'none'; ipodQuoteText.textContent = ''; }
+      if (ipodQuoteAuthor) { ipodQuoteAuthor.style.display = 'none'; ipodQuoteAuthor.textContent = ''; }
+      songInfo.style.display = '';
+
+      // Update fields without replacing the container
+      let titleEl = songInfo.querySelector('.song-title');
+      let artistEl = songInfo.querySelector('.song-artist');
+      if (!titleEl) {
+        titleEl = document.createElement('div');
+        titleEl.className = 'song-title';
+        songInfo.appendChild(titleEl);
       }
+      if (!artistEl) {
+        artistEl = document.createElement('div');
+        artistEl.className = 'song-artist';
+        songInfo.appendChild(artistEl);
+      }
+      titleEl.textContent = song.title;
+      artistEl.textContent = song.artist;
+
+      // Ensure progress/time elements exist
+      let progressContainer = songInfo.querySelector('.progress-container');
+      if (!progressContainer) {
+        progressContainer = document.createElement('div');
+        progressContainer.className = 'progress-container';
+        progressContainer.innerHTML = `
+          <div class="progress-bar" id="progressBarContainer">
+            <div class="progress" id="progressBar"></div>
+          </div>
+          <div class="time-info">
+            <span id="currentTime">${formatTime(currentTime)}</span>
+            <span id="totalTime">${formatTime(totalTime)}</span>
+          </div>`;
+        songInfo.appendChild(progressContainer);
+      } else {
+        const currentTimeEl = progressContainer.querySelector('#currentTime');
+        const totalTimeEl = progressContainer.querySelector('#totalTime');
+        if (currentTimeEl) currentTimeEl.textContent = formatTime(currentTime);
+        if (totalTimeEl) totalTimeEl.textContent = formatTime(totalTime);
+      }
+
+      // Re-attach progress bar event safely
+      const progressBarContainer = document.getElementById('progressBarContainer');
+      if (progressBarContainer && !progressBarContainer._handlerAttached) {
+        progressBarContainer.addEventListener('click', handleProgressBarClick);
+        progressBarContainer._handlerAttached = true;
+      }
+    }
+
+    // Ensure screen-content has stable child elements to avoid accidental removal
+    function ensureScreenElements() {
+      const screenContent = document.querySelector('.screen-content');
+      if (!screenContent) return;
+
+      // song-info
+      let songInfo = screenContent.querySelector('.song-info');
+      if (!songInfo) {
+        songInfo = document.createElement('div');
+        songInfo.className = 'song-info';
+        screenContent.insertBefore(songInfo, screenContent.firstChild);
+      }
+
+      // ipod-quote-text
+      let ipodQuoteText = screenContent.querySelector('.ipod-quote-text');
+      if (!ipodQuoteText) {
+        ipodQuoteText = document.createElement('div');
+        ipodQuoteText.className = 'ipod-quote-text';
+        ipodQuoteText.style.padding = '20px';
+        screenContent.appendChild(ipodQuoteText);
+      }
+
+      // ipod-quote-author
+      let ipodQuoteAuthor = screenContent.querySelector('.ipod-quote-author');
+      if (!ipodQuoteAuthor) {
+        ipodQuoteAuthor = document.createElement('div');
+        ipodQuoteAuthor.className = 'ipod-quote-author';
+        screenContent.appendChild(ipodQuoteAuthor);
+      }
+
+      // Default visibility: show song info, hide quotes
+      if (songInfo) songInfo.style.display = '';
+      if (ipodQuoteText) {
+        ipodQuoteText.style.display = 'none';
+        ipodQuoteText.textContent = '';
+      }
+      if (ipodQuoteAuthor) {
+        ipodQuoteAuthor.style.display = 'none';
+        ipodQuoteAuthor.textContent = '';
+      }
+    }
+
+    // Centralized audio listeners (attach once)
+    function sendPreferredMusicToSW(url) {
+      try {
+        if (!isPowerOn) return;
+        if (!url) return;
+        if (url === lastSentPreferredMusicUrl) return; // dedupe
+        lastSentPreferredMusicUrl = url;
+        const msg = { type: 'set-preferred-music', url };
+        if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+          navigator.serviceWorker.controller.postMessage(msg);
+        } else if (navigator.serviceWorker && navigator.serviceWorker.ready) {
+          navigator.serviceWorker.ready.then(reg => { if (reg.active) reg.active.postMessage(msg); }).catch(()=>{});
+        }
+      } catch (e) {}
+    }
+
+    function attachAudioListenersOnce() {
+      if (audioListenersAttached) return;
+      if (typeof audioPlayer === 'undefined' || !audioPlayer) return;
+      audioListenersAttached = true;
+
+      let saveTimeout;
+
+      audioPlayer.addEventListener('loadedmetadata', function() {
+        totalTime = Math.floor(audioPlayer.duration);
+        updateTotalTimeDisplay();
+        if (pendingSeekTime !== null) {
+          try {
+            if (pendingSeekTime < audioPlayer.duration) audioPlayer.currentTime = pendingSeekTime;
+          } catch (e) {}
+          pendingSeekTime = null;
+        }
+        // Ensure progress UI reflects newly loaded metadata and any seek
+        updateProgressBar();
+      });
+
+      audioPlayer.addEventListener('ended', function() {
+        if (isPlaying) nextSong();
+        savePlayerState();
+      });
+
+      audioPlayer.addEventListener('error', function(e) {
+        console.error("Audio error:", audioPlayer.error);
+        // Move to next display track
+        if (displayOrder.length > 0) {
+          const nextIdx = (currentSongIndex + 1) % displayOrder.length;
+          setTrack(nextIdx, { forcePlay: true, resetTime: true });
+        }
+        savePlayerState();
+      });
+
+      audioPlayer.addEventListener('play', function() {
+        isPlaying = true;
+        const playIcon = document.getElementById('playIcon');
+        if (playIcon) playIcon.className = 'fas fa-pause';
+        // Update UI immediately; rely on 'timeupdate' for ongoing updates
+        updateProgressBar();
+        savePlayerState();
+        sendPreferredMusicToSW(currentTrackId || audioPlayer.src);
+      });
+
+      audioPlayer.addEventListener('pause', function() {
+        isPlaying = false;
+        const playIcon = document.getElementById('playIcon');
+        if (playIcon) playIcon.className = 'fas fa-play';
+        // Ensure UI shows the paused position
+        updateProgressBar();
+        savePlayerState();
+      });
+
+      audioPlayer.addEventListener('timeupdate', function() {
+        currentTime = Math.floor(audioPlayer.currentTime || 0);
+        // Update progress UI on timeupdate for smooth feedback
+        updateProgressBar();
+        // Throttled save
+        clearTimeout(saveTimeout);
+        saveTimeout = setTimeout(savePlayerState, 2000);
+      });
     }
 
     // ====== AUDIO FUNCTIONS ======
@@ -705,10 +931,12 @@ function showQuoteInScreen() {
     }
 
     function preloadAudioDurations() {
-      musicLibrary.forEach((song, index) => {
+      originalLibrary.forEach((song, index) => {
         if (!audioDurations[song.audioUrl]) {
           getAudioDuration(song.audioUrl, (duration) => {
-            if (index === currentSongIndex && totalTime === 0) {
+            // If the current display index maps to this original index, update
+            const displayIdx = findDisplayIndexByTrackId(song.audioUrl);
+            if (displayIdx === currentSongIndex && totalTime === 0) {
               totalTime = duration;
               updateTotalTimeDisplay();
             }
@@ -758,37 +986,61 @@ function showQuoteInScreen() {
       }
     }
 
-    function playSong() {
-      const song = musicLibrary[currentSongIndex];
-      
-      if (isPlaying && audioPlayer.src.includes(song.audioUrl)) {
+    function playSong(force = false) {
+      const song = getTrackByDisplayIndex(currentSongIndex);
+      if (!song) return;
+
+      const trackId = song.audioUrl;
+
+      // Idempotency: if same track currently playing and not forced, do nothing
+      if (!force && currentTrackId === trackId && !audioPlayer.paused && isPlaying) {
         return;
       }
-      
-      audioPlayer.src = song.audioUrl;
-      
-      audioPlayer.addEventListener('loadedmetadata', function onMetadataLoad() {
-        totalTime = Math.floor(audioPlayer.duration);
-        updateTotalTimeDisplay();
-        audioPlayer.removeEventListener('loadedmetadata', onMetadataLoad);
-      }, { once: true });
-      
-      audioPlayer.currentTime = currentTime;
-      
-      audioPlayer.play().then(() => {
-        isPlaying = true;
-        const playIcon = document.getElementById('playIcon');
-        if (playIcon) playIcon.className = 'fas fa-pause';
-        
-        clearInterval(playInterval);
-        playInterval = setInterval(updateProgressBar, 1000);
-        savePlayerState()
-      }).catch(error => {
-        console.error("Audio playback failed:", error);
-        isPlaying = false;
-        const playIcon = document.getElementById('playIcon');
-        if (playIcon) playIcon.className = 'fas fa-play';
-      });
+
+      // If same track but currently paused, just resume without reassigning src
+      if (currentTrackId === trackId && audioPlayer.paused) {
+        const playPromise = audioPlayer.play();
+        if (playPromise !== undefined) {
+          playPromise.then(() => {}).catch(() => {});
+        }
+        return;
+      }
+
+      // New track: set canonical id, set src and schedule seek after metadata
+      currentTrackId = trackId;
+      audioPlayer.src = trackId;
+      pendingSeekTime = currentTime;
+
+      const playPromise = audioPlayer.play();
+      if (playPromise !== undefined) {
+        playPromise.then(() => {
+          // state changes handled in centralized 'play' listener
+        }).catch(error => {
+          console.error("Audio playback failed:", error);
+        });
+      }
+    }
+
+    // Centralized track switcher
+    function setTrack(displayIndex, options = {}) {
+      const { forcePlay = false, resetTime = true } = options;
+      if (!Number.isInteger(displayIndex) || displayIndex < 0 || displayIndex >= displayOrder.length) return;
+      // If same display index and not forcing a UI update, do nothing
+      if (displayIndex === currentSongIndex && !forcePlay) return;
+
+      currentSongIndex = displayIndex;
+      if (resetTime) currentTime = 0;
+
+      const track = getTrackByDisplayIndex(currentSongIndex);
+      totalTime = track && track.duration ? track.duration : totalTime;
+
+      updateSongDisplay();
+      updateCardDeck();
+      updateQuoteFromSong();
+      if (isPlaylistOpen) renderPlaylist();
+
+      if (forcePlay) playSong(true);
+      savePlayerState();
     }
 
     function pauseSong() {
@@ -796,96 +1048,39 @@ function showQuoteInScreen() {
       isPlaying = false;
       const playIcon = document.getElementById('playIcon');
       if (playIcon) playIcon.className = 'fas fa-play';
-      clearInterval(playInterval);
+      // progress is updated via 'timeupdate' event
+      updateProgressBar();
       savePlayerState()
     }
 
     function nextSong() {
-      currentSongIndex = (currentSongIndex + 1) % musicLibrary.length;
-      currentTime = 0;
-      updateSongDisplay();
-      updateCardDeck();
-      updateQuoteFromSong();
-      
-      const totalTimeEl = document.getElementById('totalTime');
-      if (totalTimeEl) totalTimeEl.textContent = '0:00';
-      
-      const nextSong = musicLibrary[currentSongIndex];
-      getAudioDuration(nextSong.audioUrl, (duration) => {
-        if (!isPlaying) {
-          updateTotalTimeDisplay();
-        }
-      });
-      
-      playSong();
-      
-      if (isPlaylistOpen) {
-        renderPlaylist();
-      }
-
-      savePlayerState()
+      const nextIdx = (currentSongIndex + 1) % displayOrder.length;
+      setTrack(nextIdx, { forcePlay: true, resetTime: true });
     }
 
     function prevSong() {
-      currentSongIndex = (currentSongIndex - 1 + musicLibrary.length) % musicLibrary.length;
-      currentTime = 0;
-      updateSongDisplay();
-      updateCardDeck();
-      updateQuoteFromSong();
-      
-      const totalTimeEl = document.getElementById('totalTime');
-      if (totalTimeEl) {
-        totalTimeEl.textContent = '0:00';
-        totalTimeEl.classList.add('loading');
-      }
-      
-      const prevSong = musicLibrary[currentSongIndex];
-      getAudioDuration(prevSong.audioUrl, (duration) => {
-        if (totalTimeEl) totalTimeEl.classList.remove('loading');
-        if (!isPlaying) {
-          updateTotalTimeDisplay();
-        }
-      });
-      
-      playSong();
-      
-      if (isPlaylistOpen) {
-        renderPlaylist();
-      }
-      savePlayerState()
+      const prevIdx = (currentSongIndex - 1 + displayOrder.length) % displayOrder.length;
+      setTrack(prevIdx, { forcePlay: true, resetTime: true });
     }
 
     function shuffleSongs() {
       if (!isPowerOn) return;
-      
-      const currentSong = musicLibrary[currentSongIndex];
-      const shuffledLibrary = [...musicLibrary];
-      
-      for (let i = shuffledLibrary.length - 1; i > 0; i--) {
+      // Shuffle the display order only (do not mutate originalLibrary)
+      const currentlyPlayingId = currentTrackId || (getTrackByDisplayIndex(currentSongIndex) || {}).audioUrl;
+      const newOrder = displayOrder.slice();
+      for (let i = newOrder.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
-        [shuffledLibrary[i], shuffledLibrary[j]] = [shuffledLibrary[j], shuffledLibrary[i]];
+        [newOrder[i], newOrder[j]] = [newOrder[j], newOrder[i]];
       }
-      
-      const newIndex = shuffledLibrary.findIndex(song => 
-        song.title === currentSong.title && song.artist === currentSong.artist
-      );
-      
-      currentSongIndex = newIndex !== -1 ? newIndex : 0;
-      musicLibrary.length = 0;
-      musicLibrary.push(...shuffledLibrary);
-      
-      currentTime = 0;
-      totalTime = musicLibrary[currentSongIndex].duration;
-      
-      updateSongDisplay();
-      createCardDeck();
-      updateProgressBar();
-      updateQuoteFromSong();
-      
-      if (isPlaying) {
-        playSong();
-      }
-      
+      displayOrder = newOrder;
+
+      // Keep the same track playing by finding its new display index
+      const newDisplayIdx = findDisplayIndexByTrackId(currentlyPlayingId);
+      const targetIdx = newDisplayIdx !== -1 ? newDisplayIdx : 0;
+
+      // Use setTrack: if we were playing, continue playing; otherwise just update UI
+      setTrack(targetIdx, { forcePlay: !!isPlaying, resetTime: true });
+
       const shuffleBtn = document.getElementById('shuffleBtn');
       if (shuffleBtn) {
         shuffleBtn.style.color = 'var(--accent)';
@@ -911,7 +1106,7 @@ function showQuoteInScreen() {
 
     // ====== DISPLAY FUNCTIONS ======
     function updateSongDisplay() {
-      const song = musicLibrary[currentSongIndex];
+      const song = getTrackByDisplayIndex(currentSongIndex);
       const songTitle = document.getElementById('songTitle');
       const songArtist = document.getElementById('songArtist');
       const screenImage = document.getElementById('screenImage');
@@ -920,7 +1115,7 @@ function showQuoteInScreen() {
       if (songArtist) songArtist.textContent = song.artist;
       if (screenImage) screenImage.src = song.image;
       
-      if (!audioDurations[song.audioUrl]) {
+      if (song && !audioDurations[song.audioUrl]) {
         getAudioDuration(song.audioUrl, (duration) => {
           if (!isPlaying && totalTime === 0) {
             totalTime = duration;
@@ -937,26 +1132,31 @@ function showQuoteInScreen() {
       if (isQuotesMode && isMobileView) {
         showQuoteInScreen();
       }
+
+      // Ensure canonical id matches displayed track
+      if (song && song.audioUrl) currentTrackId = song.audioUrl;
     }
 
     function updateProgressBar() {
-      if (audioPlayer.duration) {
-        currentTime = Math.floor(audioPlayer.currentTime);
-        totalTime = Math.floor(audioPlayer.duration);
-        
-        const progressPercent = (currentTime / totalTime) * 100;
-        const progressBar = document.getElementById('progressBar');
-        if (progressBar) progressBar.style.width = `${progressPercent}%`;
-        
-        const currentTimeEl = document.getElementById('currentTime');
-        const totalTimeEl = document.getElementById('totalTime');
-        if (currentTimeEl) currentTimeEl.textContent = formatTime(currentTime);
-        if (totalTimeEl) totalTimeEl.textContent = formatTime(totalTime);
-        
-        if (currentTime >= totalTime && isPlaying) {
-          nextSong();
-        }
+      // Prefer using audio element values when available, but tolerate missing duration
+      const hasDuration = !!(audioPlayer && audioPlayer.duration && !isNaN(audioPlayer.duration) && audioPlayer.duration > 0);
+      if (audioPlayer) {
+        if (typeof audioPlayer.currentTime === 'number') currentTime = Math.floor(audioPlayer.currentTime || 0);
+        if (hasDuration) totalTime = Math.floor(audioPlayer.duration);
       }
+
+      if (!hasDuration && !totalTime) return; // nothing sensible to display yet
+
+      const progressPercent = totalTime ? (currentTime / totalTime) * 100 : 0;
+      const progressBar = document.getElementById('progressBar');
+      if (progressBar) progressBar.style.width = `${Math.max(0, Math.min(100, progressPercent))}%`;
+
+      const currentTimeEl = document.getElementById('currentTime');
+      const totalTimeEl = document.getElementById('totalTime');
+      if (currentTimeEl) currentTimeEl.textContent = formatTime(currentTime);
+      if (totalTimeEl) totalTimeEl.textContent = formatTime(totalTime);
+
+      // Do NOT advance via polling. Audio element's 'ended' event handles track advancement.
     }
 
     function updateTotalTimeDisplay() {
@@ -967,7 +1167,7 @@ function showQuoteInScreen() {
     }
 
 function updateQuoteFromSong() {
-  const song = musicLibrary[currentSongIndex];
+  const song = getTrackByDisplayIndex(currentSongIndex);
   const currentQuoteEl = document.getElementById('currentQuote');
   const currentAuthorEl = document.getElementById('currentAuthor');
   
@@ -1009,18 +1209,18 @@ function updateQuoteFromSong() {
       
       cardDeck.innerHTML = '';
       cards = [];
-      
-      musicLibrary.forEach((song, index) => {
+      displayOrder.forEach((origIdx, displayIndex) => {
+        const song = originalLibrary[origIdx];
         const card = document.createElement('div');
         card.className = 'music-card';
-        card.dataset.index = index;
-        
-        if (index === currentSongIndex) {
+        card.dataset.index = displayIndex;
+
+        if (displayIndex === currentSongIndex) {
           card.classList.add('playing');
         } else {
           card.classList.add('card-back');
         }
-        
+
         card.innerHTML = `
           <div class="card-front">
             <div class="card-corner top-left">${song.cardValue}</div>
@@ -1028,12 +1228,12 @@ function updateQuoteFromSong() {
             <img src="${song.image}" alt="${song.title}" class="card-image">
           </div>
         `;
-        
+
         card.addEventListener('click', function() {
           if (!isPowerOn) return;
-          
+
           const clickedIndex = parseInt(this.dataset.index);
-          
+
           if (clickedIndex === currentSongIndex) {
             if (isPlaying) {
               pauseSong();
@@ -1041,16 +1241,10 @@ function updateQuoteFromSong() {
               playSong();
             }
           } else {
-            currentSongIndex = clickedIndex;
-            currentTime = 0;
-            totalTime = musicLibrary[currentSongIndex].duration;
-            updateSongDisplay();
-            updateCardDeck();
-            updateQuoteFromSong();
-            playSong();
+            setTrack(clickedIndex, { forcePlay: true, resetTime: true });
           }
         });
-        
+
         cardDeck.appendChild(card);
         cards.push(card);
       });
@@ -1096,16 +1290,16 @@ function updateQuoteFromSong() {
       
       playlistContainer.innerHTML = '';
       let totalDuration = 0;
-      
-      musicLibrary.forEach((song, index) => {
+      displayOrder.forEach((origIdx, index) => {
+        const song = originalLibrary[origIdx];
         const duration = audioDurations[song.audioUrl] || 0;
         totalDuration += duration;
-        
+
         const playlistItem = document.createElement('div');
         playlistItem.className = 'playlist-item';
         if (index === currentSongIndex) playlistItem.classList.add('playing');
         playlistItem.dataset.index = index;
-        
+
         playlistItem.innerHTML = `
           <div class="playlist-item-icon">
             <img src="${song.image}" alt="${song.title}">
@@ -1118,10 +1312,10 @@ function updateQuoteFromSong() {
             ? '<div class="playlist-item-playing"><i class="fas fa-volume-up"></i></div>' 
             : `<div class="playlist-item-duration">${formatTime(duration)}</div>`}
         `;
-        
+
         playlistItem.addEventListener('click', function() {
           const clickedIndex = parseInt(this.dataset.index);
-          
+
           if (clickedIndex === currentSongIndex) {
             if (isPlaying) {
               pauseSong();
@@ -1129,24 +1323,19 @@ function updateQuoteFromSong() {
               playSong();
             }
           } else {
-            currentSongIndex = clickedIndex;
-            currentTime = 0;
-            updateSongDisplay();
-            updateCardDeck();
-            updateQuoteFromSong();
-            playSong();
+            setTrack(clickedIndex, { forcePlay: true, resetTime: true });
             renderPlaylist();
           }
-          
+
           setTimeout(() => closePlaylist(), 500);
         });
-        
+
         playlistContainer.appendChild(playlistItem);
       });
       
       const playlistCount = document.getElementById('playlistCount');
       const totalPlaylistTimeEl = document.getElementById('totalPlaylistTime');
-      if (playlistCount) playlistCount.textContent = `${musicLibrary.length} songs`;
+      if (playlistCount) playlistCount.textContent = `${displayOrder.length} songs`;
       if (totalPlaylistTimeEl) totalPlaylistTimeEl.textContent = formatTime(totalDuration);
     }
 
@@ -1159,7 +1348,7 @@ function updateQuoteFromSong() {
       
       cardRevealModal.innerHTML = '<div class="modal-close" onclick="closeReveal()">✕</div>';
       
-      musicLibrary.forEach((song, index) => {
+      originalLibrary.forEach((song, index) => {
         const revealCard = document.createElement('div');
         revealCard.className = 'reveal-card';
         
@@ -1228,6 +1417,9 @@ function updateQuoteFromSong() {
   }
 
   setupAutoSave();
+
+      // Ensure audio listeners are attached once
+      attachAudioListenersOnce();
       
       // Power switch
       const powerSwitch = document.getElementById('powerSwitch');
@@ -1325,38 +1517,7 @@ function updateQuoteFromSong() {
         }
       });
       
-      // Audio event listeners
-      audioPlayer.addEventListener('loadedmetadata', function() {
-        totalTime = Math.floor(audioPlayer.duration);
-        updateTotalTimeDisplay();
-      });
-      
-      audioPlayer.addEventListener('ended', function() {
-        if (isPlaying) {
-          nextSong();
-        }
-      });
-      
-audioPlayer.addEventListener('error', function(e) {
-  console.error("Audio error:", audioPlayer.error);
-  
-  // Try to recover by moving to next song
-  if (currentSongIndex < musicLibrary.length - 1) {
-    currentSongIndex++;
-    currentTime = 0;
-    updateSongDisplay();
-    updateCardDeck();
-    updateQuoteFromSong();
-    
-    // Try playing next song
-    setTimeout(() => {
-      playSong();
-    }, 1000);
-  }
-  
-  // Save error state
-  savePlayerState();
-});
+      // audio listeners attached centrally via attachAudioListenersOnce()
       
       // Window resize handler
       let resizeTimeout;
@@ -1390,32 +1551,20 @@ audioPlayer.addEventListener('error', function(e) {
           let url = null;
           if (saved) {
             const state = JSON.parse(saved);
-            if (state.currentSongIndex !== undefined && musicLibrary[state.currentSongIndex]) {
-              url = musicLibrary[state.currentSongIndex].audioUrl;
+            if (state.currentTrackId) url = state.currentTrackId;
+            if (state.displayOrder && isValidDisplayOrder(state.displayOrder)) {
+              // restore displayOrder in memory as best-effort
+              displayOrder = state.displayOrder.slice();
             }
           }
           // fallback to first track if nothing saved
-          if (!url && musicLibrary && musicLibrary[0]) url = musicLibrary[0].audioUrl;
-          if (url) postToSW({ type: 'set-preferred-music', url });
+          if (!url && originalLibrary && originalLibrary[0]) url = originalLibrary[0].audioUrl;
+          if (url) sendPreferredMusicToSW(url);
         } catch (e) {}
       }
 
       // Try sending once after initialization
       setTimeout(sendPreferredFromState, 900);
-
-      // Keep SW updated when audioPlayer starts playing or metadata loads
-      (function attachAudioListeners() {
-        if (typeof audioPlayer !== 'undefined' && audioPlayer) {
-          audioPlayer.addEventListener('play', () => {
-            if (audioPlayer.src) postToSW({ type: 'set-preferred-music', url: audioPlayer.src });
-          });
-          audioPlayer.addEventListener('loadedmetadata', () => {
-            if (audioPlayer.src) postToSW({ type: 'set-preferred-music', url: audioPlayer.src });
-          });
-        } else {
-          setTimeout(attachAudioListeners, 600);
-        }
-      })();
 
       // When the SW controller changes (new SW), resend preferred
       navigator.serviceWorker.addEventListener('controllerchange', () => {
