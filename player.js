@@ -9,6 +9,7 @@
     let playInterval = null;
     let cards = [];
     let audioDurations = {};
+    let _currentAudioObjectUrl = null;
     let isPlaylistOpen = false;
     let isQuotesMode = false;
     let isMobileView = false;
@@ -121,6 +122,102 @@ function savePlayerState() {
   localStorage.setItem('musicPlayerState', JSON.stringify(playerState));
 }
 
+// Post preferred music to service worker (global helper)
+function sendPreferredToSW(url) {
+  if (!('serviceWorker' in navigator)) return;
+  try {
+    // If we have an active controller use it immediately
+    if (navigator.serviceWorker.controller) {
+      navigator.serviceWorker.controller.postMessage({ type: 'set-preferred-music', url });
+      return;
+    }
+
+    // Otherwise if SW is registered/ready, post to active
+    if (window._swRegistered) {
+      navigator.serviceWorker.ready.then(reg => {
+        if (reg.active) reg.active.postMessage({ type: 'set-preferred-music', url });
+      }).catch(() => {});
+      return;
+    }
+
+    // If SW not yet registered, attempt registration in background and skip posting now
+    ensureServiceWorkerRegistered().then(() => {
+      try { navigator.serviceWorker.controller && navigator.serviceWorker.controller.postMessage({ type: 'set-preferred-music', url }); } catch (e) {}
+    }).catch(() => {});
+  } catch (e) {}
+}
+
+// Try to load audio from service worker via '/current-music' (served from cache) falling back to direct URL
+async function setAudioFromCacheOrUrl(url) {
+  // clear previous object URL if any
+  if (_currentAudioObjectUrl) {
+    URL.revokeObjectURL(_currentAudioObjectUrl);
+    _currentAudioObjectUrl = null;
+  }
+
+  // Inform SW of preferred music (so /current-music maps to it)
+  try { sendPreferredToSW(url); } catch (e) {}
+  // Give SW a short moment to receive the message and prefetch
+  await new Promise(r => setTimeout(r, 150));
+
+  try {
+    const resp = await fetch('/current-music', { cache: 'reload' });
+    if (resp && resp.ok) {
+      const blob = await resp.blob();
+      _currentAudioObjectUrl = URL.createObjectURL(blob);
+      audioPlayer.src = _currentAudioObjectUrl;
+      return;
+    }
+  } catch (e) {
+    // proceed to fallback
+  }
+
+  // Fallback to original URL
+  audioPlayer.src = url;
+}
+
+// Ensure service worker is registered with retries; sets window._swRegistered = true on success
+function ensureServiceWorkerRegistered(opts = {}) {
+  const maxAttempts = opts.maxAttempts || 5;
+  const baseDelay = opts.baseDelay || 500; // ms
+
+  if (!('serviceWorker' in navigator)) {
+    window._swRegistered = false;
+    return Promise.reject(new Error('No serviceWorker support'));
+  }
+
+  // If already marked registered, resolve
+  if (window._swRegistered) return Promise.resolve(true);
+
+  let attempt = 0;
+
+  function tryRegister(resolve, reject) {
+    attempt++;
+    navigator.serviceWorker.register('/sw.js').then(reg => {
+      // success
+      window._swRegistered = true;
+      // notify controller if it's active
+      if (reg.active) {
+        try { reg.active.postMessage({ type: 'sw-registered' }); } catch (e) {}
+      }
+      resolve(true);
+    }).catch(err => {
+      if (attempt >= maxAttempts) {
+        window._swRegistered = false;
+        return reject(err);
+      }
+      const delay = baseDelay * Math.pow(2, attempt - 1);
+      setTimeout(() => tryRegister(resolve, reject), delay);
+    });
+  }
+
+  return new Promise((resolve, reject) => {
+    tryRegister(resolve, reject);
+    // Also attach a fallback: if navigator.serviceWorker.ready resolves, mark registered
+    navigator.serviceWorker.ready.then(() => { window._swRegistered = true; }).catch(() => {});
+  });
+}
+
 function loadPlayerState() {
   const savedState = localStorage.getItem('musicPlayerState');
   if (savedState) {
@@ -167,7 +264,7 @@ function loadPlayerState() {
         // Load the audio
         const song = musicLibrary[currentSongIndex];
         if (song) {
-          audioPlayer.src = song.audioUrl;
+          setAudioFromCacheOrUrl(song.audioUrl);
           
           // Set playback position
           audioPlayer.addEventListener('loadedmetadata', function onLoad() {
@@ -228,7 +325,7 @@ function forceAutoplay() {
         
         const song = musicLibrary[currentSongIndex];
         if (song) {
-          audioPlayer.src = song.audioUrl;
+          setAudioFromCacheOrUrl(song.audioUrl);
         }
       }
     } catch (error) {
@@ -765,7 +862,7 @@ function showQuoteInScreen() {
         return;
       }
       
-      audioPlayer.src = song.audioUrl;
+      setAudioFromCacheOrUrl(song.audioUrl);
       
       audioPlayer.addEventListener('loadedmetadata', function onMetadataLoad() {
         totalTime = Math.floor(audioPlayer.duration);
@@ -1420,5 +1517,9 @@ audioPlayer.addEventListener('error', function(e) {
       // When the SW controller changes (new SW), resend preferred
       navigator.serviceWorker.addEventListener('controllerchange', () => {
         setTimeout(sendPreferredFromState, 500);
+      });
+      // Ensure SW is registered in background (don't block app)
+      ensureServiceWorkerRegistered().catch(() => {
+        // silent - app will fall back to direct fetchs
       });
     })();
