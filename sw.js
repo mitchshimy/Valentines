@@ -68,15 +68,23 @@ const PRECACHE_URLS = [
   // Critical assets - load really first
   'assets/images/background.png',
   'assets/images/landscape.jpg',
-  'assets/music/chikwere.mp3',
+  // Don't precache large music here; background-caching will handle it
   'assets/images/4.jpg'
 ];
 
 self.addEventListener('install', event => {
   self.skipWaiting();
-  event.waitUntil(
-    caches.open(PRECACHE).then(cache => cache.addAll(PRECACHE_URLS))
-  );
+  // Add precache items individually so a single failing large asset doesn't block install
+  event.waitUntil((async () => {
+    const cache = await caches.open(PRECACHE);
+    await Promise.all(PRECACHE_URLS.map(async url => {
+      try {
+        await cache.add(url);
+      } catch (e) {
+        // ignore individual failures (network issues, large files)
+      }
+    }));
+  })());
 });
 
 self.addEventListener('activate', event => {
@@ -122,7 +130,7 @@ self.addEventListener('fetch', event => {
       if (cached) return cached;
       try {
         const resp = await fetch(preferredMusicUrl);
-        if (resp && resp.status === 200) {
+        if (resp && (resp.status === 200 || resp.status === 206)) {
           try {
             try {
               const putUrl = new URL(preferredMusicUrl, self.location.origin);
@@ -175,7 +183,7 @@ async function musicFirst(request) {
     if (cached) return cached;
     // Otherwise fetch from network and store into MUSIC_CACHE for priority
     const response = await fetch(request);
-    if (response && response.status === 200) {
+    if (response && (response.status === 200 || response.status === 206)) {
       try {
         const musicCache = await caches.open(MUSIC_CACHE);
         try {
@@ -227,7 +235,7 @@ async function prefetchPreferredMusic(url) {
     const existing = await cache.match(url);
     if (existing) return;
     const resp = await fetch(url);
-    if (resp && resp.status === 200) {
+    if (resp && (resp.status === 200 || resp.status === 206)) {
       try {
         try {
           const putUrl = new URL(url, self.location.origin);
