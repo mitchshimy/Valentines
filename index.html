@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>From Me to You</title>
     <link rel="stylesheet" type="text/css" href="letter-styles.css">
+    <link rel="icon" href="data:,">
 </head>
 <body>
 <!-- Flex container holding both the content and the envelope -->
@@ -52,6 +53,14 @@
 </div>
 
 <script type="text/javascript" src="letter.js"></script>
+
+<script>
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/sw.js')
+            .then(reg => console.log('ServiceWorker registered:', reg.scope))
+            .catch(err => console.error('SW registration failed:', err));
+    }
+</script>
 
 </body>
 </html>

@@ -2,6 +2,22 @@ let currentTypingTimeout = null;
 let isTyping = false;
 let letterTypingComplete = false;
 
+// Helper to communicate with the service worker
+function sendMessageToSW(message) {
+    if (!('serviceWorker' in navigator)) return;
+    try {
+        if (navigator.serviceWorker.controller) {
+            navigator.serviceWorker.controller.postMessage(message);
+        } else {
+            navigator.serviceWorker.ready.then(reg => {
+                if (reg.active) reg.active.postMessage(message);
+            }).catch(() => {});
+        }
+    } catch (e) {
+        // ignore
+    }
+}
+
 // --- UTILITY FUNCTIONS ---
 
 // Create and append a cursor
@@ -104,6 +120,9 @@ function typeText(element, html, baseSpeed = 120, callback = null) {
 function startLetterTypingAnimation() {
     if (isTyping || letterTypingComplete) return;
     isTyping = true;
+
+    // Tell the service worker to start background caching while the letter types
+    sendMessageToSW({ type: 'cache-rest' });
 
     const paragraphs = document.querySelectorAll('.letter-content p');
     if (!paragraphs.length) return;
