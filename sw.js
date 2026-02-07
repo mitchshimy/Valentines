@@ -79,10 +79,8 @@ const PRECACHE_URLS = [
   'letter.js',
   'player.js',
   // Critical assets - load really first
-  'assets/images/background.png',
-  'assets/images/landscape.jpg',
-  // Don't precache large music here; background-caching will handle it
-  'assets/images/4.jpg'
+  'assets/images/landscape.jpg'
+
 ];
 
 self.addEventListener('install', event => {
@@ -292,8 +290,10 @@ async function cacheRestAssets() {
     'assets/images/2151930103.jpg',
     'assets/images/landscape.jpg',
     'assets/images/background-dark.mp4',
+    'assets/images/background.png',
 
     // music (exclude already precached first track)
+    'assets/music/chikwere.mp3',
     'assets/music/noonelikeyou.mp3',
     'assets/music/itsyou.mp3',
     'assets/music/happyyouremine.mp3',
