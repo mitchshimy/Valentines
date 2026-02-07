@@ -4,6 +4,59 @@ const BG_CACHE = 'bgcache-v1';
 const MUSIC_CACHE = 'music-v1';
 let preferredMusicUrl = null;
 
+// Simple IndexedDB helpers for storing small key/value pairs
+function openIDB() {
+  return new Promise((resolve, reject) => {
+    try {
+      const req = indexedDB.open('player-store', 1);
+      req.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
+      };
+      req.onsuccess = (e) => resolve(e.target.result);
+      req.onerror = (e) => reject(e.target.error);
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+function idbGet(key) {
+  return openIDB().then(db => new Promise((resolve, reject) => {
+    try {
+      const tx = db.transaction('kv', 'readonly');
+      const store = tx.objectStore('kv');
+      const req = store.get(key);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(undefined);
+    } catch (e) { resolve(undefined); }
+  }));
+}
+
+function idbSet(key, value) {
+  return openIDB().then(db => new Promise((resolve, reject) => {
+    try {
+      const tx = db.transaction('kv', 'readwrite');
+      const store = tx.objectStore('kv');
+      const req = store.put(value, key);
+      req.onsuccess = () => resolve(true);
+      req.onerror = () => resolve(false);
+    } catch (e) { resolve(false); }
+  }));
+}
+
+function idbDelete(key) {
+  return openIDB().then(db => new Promise((resolve, reject) => {
+    try {
+      const tx = db.transaction('kv', 'readwrite');
+      const store = tx.objectStore('kv');
+      const req = store.delete(key);
+      req.onsuccess = () => resolve(true);
+      req.onerror = () => resolve(false);
+    } catch (e) { resolve(false); }
+  }));
+}
+
 const PRECACHE_URLS = [
   '/',
   'index.html',
@@ -27,16 +80,27 @@ self.addEventListener('install', event => {
 });
 
 self.addEventListener('activate', event => {
-  event.waitUntil(
-    caches.keys().then(keys => Promise.all(
-      keys.map(key => {
-        if (key !== PRECACHE && key !== RUNTIME && key !== BG_CACHE && key !== MUSIC_CACHE) {
-          return caches.delete(key);
-        }
-        return Promise.resolve();
-      })
-    ))
-  );
+  event.waitUntil((async () => {
+    const keys = await caches.keys();
+    await Promise.all(keys.map(key => {
+      if (key !== PRECACHE && key !== RUNTIME && key !== BG_CACHE && key !== MUSIC_CACHE) {
+        return caches.delete(key);
+      }
+      return Promise.resolve();
+    }));
+
+    // Load preferred music from IDB (if present) so SW can prefetch it
+    try {
+      const stored = await idbGet('preferredMusicUrl');
+      if (stored) {
+        preferredMusicUrl = stored;
+        // fire-and-forget prefetch
+        prefetchPreferredMusic(preferredMusicUrl);
+      }
+    } catch (e) {
+      // ignore
+    }
+  })());
   self.clients.claim();
 });
 self.addEventListener('fetch', event => {
@@ -106,19 +170,18 @@ self.addEventListener('fetch', event => {
 
 async function musicFirst(request) {
   try {
-    const cache = await caches.open(MUSIC_CACHE);
-    // Try cache first
-    const cached = await cache.match(request);
+    // Try any cache (precache, bg, music, runtime)
+    const cached = await caches.match(request);
     if (cached) return cached;
-
-    // Otherwise fetch from network and store into music cache
+    // Otherwise fetch from network and store into MUSIC_CACHE for priority
     const response = await fetch(request);
     if (response && response.status === 200) {
       try {
+        const musicCache = await caches.open(MUSIC_CACHE);
         try {
           const reqUrl = new URL(request.url);
           if ((reqUrl.protocol === 'http:' || reqUrl.protocol === 'https:') && reqUrl.origin === self.location.origin) {
-            await cache.put(request, response.clone());
+            await musicCache.put(request, response.clone());
           }
         } catch (e) {
           // skip caching if request URL is not acceptable
@@ -144,12 +207,15 @@ self.addEventListener('message', event => {
   if (event.data.type === 'set-preferred-music' && event.data.url) {
     preferredMusicUrl = event.data.url;
     // prefetch and cache it into MUSIC_CACHE for immediate availability
+    // persist to IndexedDB so setting survives SW restarts
+    try { idbSet('preferredMusicUrl', preferredMusicUrl); } catch (e) {}
     prefetchPreferredMusic(preferredMusicUrl);
     return;
   }
 
   if (event.data.type === 'clear-preferred-music') {
     preferredMusicUrl = null;
+    try { idbDelete('preferredMusicUrl'); } catch (e) {}
     return;
   }
 });
@@ -207,12 +273,18 @@ async function cacheRestAssets() {
   ];
 
   try {
-    const cache = await caches.open(BG_CACHE);
+    const bgCache = await caches.open(BG_CACHE);
+    const musicCache = await caches.open(MUSIC_CACHE);
     for (const asset of assets) {
       try {
         // Slight stagger to avoid network burst
         await new Promise(r => setTimeout(r, 150));
-        await cache.add(asset);
+        if (asset.startsWith('assets/music/')) {
+          // store music into MUSIC_CACHE (priority)
+          try { await musicCache.add(asset); } catch (e) { /* ignore individual music failures */ }
+        } else {
+          try { await bgCache.add(asset); } catch (e) { /* ignore individual failures */ }
+        }
       } catch (e) {
         // ignore individual failures
       }
