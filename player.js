@@ -120,6 +120,67 @@
     let audioListenersAttached = false;
     let lastSentPreferredMusicUrl = null; // dedupe SW messages
 
+    let lastTimeUpdate = 0;
+
+    function attachAudioListenersOnce() {
+      if (audioListenersAttached) return;
+      audioListenersAttached = true;
+
+      audioPlayer.addEventListener('timeupdate', onTimeUpdate);
+      audioPlayer.addEventListener('loadedmetadata', onLoadedMetadata);
+      audioPlayer.addEventListener('ended', onTrackEnded);
+      audioPlayer.addEventListener('error', onAudioError);
+
+      // NEW: sync play/pause icon automatically
+      audioPlayer.addEventListener('play', () => {
+        isPlaying = true;
+        updatePlayPauseIcon();
+      });
+
+      audioPlayer.addEventListener('pause', () => {
+        isPlaying = false;
+        updatePlayPauseIcon();
+      });
+    }
+
+    // Update the icon element
+    function updatePlayPauseIcon() {
+      const playIcon = document.getElementById('playIcon');
+      if (!playIcon) return;
+      playIcon.className = isPlaying ? 'fas fa-pause' : 'fas fa-play';
+    }
+
+
+    function onTimeUpdate() {
+      const now = performance.now();
+      if (now - lastTimeUpdate < 400) return;
+      lastTimeUpdate = now;
+
+      currentTime = Math.floor(audioPlayer.currentTime || 0);
+      updateProgressBar();
+      savePlayerState();
+    }
+
+    function onLoadedMetadata() {
+      totalTime = Math.floor(audioPlayer.duration || 0);
+      updateTotalTimeDisplay();
+
+      if (pendingSeekTime != null) {
+        audioPlayer.currentTime = pendingSeekTime;
+        pendingSeekTime = null;
+      }
+    }
+
+    function onTrackEnded() {
+      nextSong();
+    }
+
+    function onAudioError() {
+      console.warn('Audio error, skipping track');
+      nextSong();
+    }
+
+
     function getTrackByDisplayIndex(displayIndex) {
       const origIdx = displayOrder[displayIndex];
       return originalLibrary[origIdx];
@@ -130,6 +191,12 @@
       if (origIdx === -1) return -1;
       return displayOrder.indexOf(origIdx);
     }
+
+    function getCurrentSongIndex() {
+      if (!currentTrackId) return -1;
+      return findDisplayIndexByTrackId(currentTrackId);
+    }
+
 
     function isValidDisplayOrder(arr) {
       if (!Array.isArray(arr) || arr.length !== originalLibrary.length) return false;
@@ -142,7 +209,7 @@
 function savePlayerState() {
   const playerState = {
     // Persist canonical identity (trackId) and display ordering
-    currentTrackId: currentTrackId || (getTrackByDisplayIndex(currentSongIndex) || {}).audioUrl,
+    currentTrackId: currentTrackId,
     displayOrder: displayOrder.slice(),
     currentTime: currentTime,
     isPlaying: isPlaying,
@@ -155,190 +222,77 @@ function savePlayerState() {
 
 function loadPlayerState() {
   const savedState = localStorage.getItem('musicPlayerState');
-  if (savedState) {
-    try {
-      const state = JSON.parse(savedState);
-      
-      // Load theme first (before anything else)
-      if (state.theme !== undefined) {
-        document.body.setAttribute('data-theme', state.theme);
-        updateThemeIcon();
-      } 
-      
-      // LOAD POWER STATE - ADD THIS SECTION
-      if (state.isPowerOn !== undefined) {
-        isPowerOn = state.isPowerOn;
-        
-        // Update power switch visual state
-        const powerSwitch = document.getElementById('powerSwitch');
-        const ipod = document.querySelector('.ipod');
-        
-        if (powerSwitch && ipod) {
-          if (isPowerOn) {
-            powerSwitch.classList.remove('off');
-            powerSwitch.classList.add('on');
-            ipod.classList.remove('off');
-          } else {
-            powerSwitch.classList.remove('on');
-            powerSwitch.classList.add('off');
-            ipod.classList.add('off');
-          }
-        }
-      }
-      
-      // Restore displayOrder if present and valid
-      if (state.displayOrder && isValidDisplayOrder(state.displayOrder)) {
-        displayOrder = state.displayOrder.slice();
-      }
+  if (!savedState) return false;
 
-      // Load song position by canonical id (use central setTrack to keep UI consistent)
-      if (state.currentTrackId !== undefined) {
-        const foundDisplayIndex = findDisplayIndexByTrackId(state.currentTrackId);
-        const targetIndex = foundDisplayIndex !== -1 ? foundDisplayIndex : 0;
-        currentTrackId = state.currentTrackId;
-        currentTime = state.currentTime || 0;
-
-        // Ensure deck exists so setTrack/updateCardDeck can operate
-        if (!cards || cards.length === 0) createCardDeck();
-
-        // Set track without forcing play and preserve saved time
-        setTrack(targetIndex, { forcePlay: false, resetTime: false });
-
-        const song = getTrackByDisplayIndex(targetIndex);
-        if (song) {
-          // Ensure audio src is set so pendingSeekTime can be applied by the centralized listener
-          audioPlayer.src = song.audioUrl;
-          pendingSeekTime = currentTime;
-          updateProgressBar();
-
-          // Restore playback state after a short delay if required
-          if (state.isPlaying && isPowerOn) {
-            setTimeout(() => {
-              playSong(true);
-            }, 500);
-          }
-        }
-      }
-      
-      // Restore volume
-      if (state.volume && audioPlayer) {
-        audioPlayer.volume = state.volume;
-      }
-
-      if (isPowerOn) {
-      // Wait a bit for everything to load, then try to play
-      setTimeout(() => {
-        forceAutoplay();
-      }, 1000);
-    }
-      
-      return true;
-    } catch (error) {
-      console.error("Error loading player state:", error);
-      return false;
-    }
-  }
-  return false;
-}
-
-function forceAutoplay() {
-  if (!isPowerOn) return;
-  
-  // Set current song and time from saved state if available
-  const savedState = localStorage.getItem('musicPlayerState');
-  if (savedState) {
-    try {
-      const state = JSON.parse(savedState);
-      // Prefer canonical id if available
-      if (state.currentTrackId) {
-        const found = findDisplayIndexByTrackId(state.currentTrackId);
-        currentSongIndex = found !== -1 ? found : 0;
-        currentTrackId = state.currentTrackId;
-        currentTime = state.currentTime || 0;
-        updateSongDisplay();
-        createCardDeck();
-        updateQuoteFromSong();
-        const song = getTrackByDisplayIndex(currentSongIndex);
-        if (song) {
-          audioPlayer.src = song.audioUrl;
-          pendingSeekTime = currentTime;
-        }
-      } else if (state.currentSongIndex !== undefined) {
-        currentSongIndex = state.currentSongIndex;
-        currentTime = state.currentTime || 0;
-        updateSongDisplay();
-        createCardDeck();
-        updateQuoteFromSong();
-        const song = getTrackByDisplayIndex(currentSongIndex);
-        if (song) {
-          audioPlayer.src = song.audioUrl;
-          pendingSeekTime = currentTime;
-          currentTrackId = song.audioUrl;
-        }
-      }
-    } catch (error) {
-      console.error("Error loading saved state for autoplay:", error);
-    }
-  }
-  
-  // Force play regardless of previous state
-  // Before attempting autoplay, restore saved track selection safely using setTrack
   try {
-    if (savedState) {
-      const state = JSON.parse(savedState);
-      if (state.currentTrackId) {
-        const found = findDisplayIndexByTrackId(state.currentTrackId);
-        const target = found !== -1 ? found : 0;
-        currentTime = state.currentTime || 0;
-        if (!cards || cards.length === 0) createCardDeck();
-        setTrack(target, { forcePlay: false, resetTime: false });
-        const song = getTrackByDisplayIndex(target);
-        if (song) {
-          audioPlayer.src = song.audioUrl;
-          pendingSeekTime = currentTime;
-        }
-      } else if (state.currentSongIndex !== undefined) {
-        const idx = state.currentSongIndex;
-        currentTime = state.currentTime || 0;
-        if (!cards || cards.length === 0) createCardDeck();
-        setTrack(idx, { forcePlay: false, resetTime: false });
-        const song = getTrackByDisplayIndex(idx);
-        if (song) {
-          audioPlayer.src = song.audioUrl;
-          pendingSeekTime = currentTime;
-          currentTrackId = song.audioUrl;
-        }
+    const state = JSON.parse(savedState);
+
+    // THEME
+    if (state.theme !== undefined) {
+      document.body.setAttribute('data-theme', state.theme);
+      updateThemeIcon();
+    }
+
+    // POWER
+    if (state.isPowerOn !== undefined) {
+      isPowerOn = state.isPowerOn;
+
+      const powerSwitch = document.getElementById('powerSwitch');
+      const ipod = document.querySelector('.ipod');
+
+      if (powerSwitch && ipod) {
+        powerSwitch.classList.toggle('on', isPowerOn);
+        powerSwitch.classList.toggle('off', !isPowerOn);
+        ipod.classList.toggle('off', !isPowerOn);
       }
     }
-  } catch (e) {
-    console.error("Error restoring saved state for autoplay:", e);
-  }
 
-  const playPromise = audioPlayer.play();
-  
-  if (playPromise !== undefined) {
-    playPromise.then(() => {
-      isPlaying = true;
-      const playIcon = document.getElementById('playIcon');
-      if (playIcon) playIcon.className = 'fas fa-pause';
-      // Update progress UI immediately; ongoing updates come from 'timeupdate'
-      updateProgressBar();
-      savePlayerState();
-    }).catch(error => {
-      console.log("Autoplay blocked. Waiting for user interaction...");
-      isPlaying = false;
-      const playIcon = document.getElementById('playIcon');
-      if (playIcon) playIcon.className = 'fas fa-play';
-      
-      // Add a click handler to start playback on first user interaction
-      const startOnInteraction = () => {
-        playSong(true);
-        document.removeEventListener('click', startOnInteraction);
-      };
-      document.addEventListener('click', startOnInteraction, { once: true });
-    });
+    // DISPLAY ORDER
+    if (state.displayOrder && isValidDisplayOrder(state.displayOrder)) {
+      displayOrder = state.displayOrder.slice();
+    }
+
+    // ENSURE UI EXISTS
+    if (!cards || cards.length === 0) {
+      createCardDeck();
+    }
+
+    // TRACK RESTORE (CANONICAL)
+    if (state.currentTrackId) {
+      const displayIdx = findDisplayIndexByTrackId(state.currentTrackId);
+      const targetIndex = displayIdx !== -1 ? displayIdx : 0;
+
+      currentTime = state.currentTime || 0;
+
+      setTrack(targetIndex, {
+        forcePlay: false,
+        resetTime: false
+      });
+
+      pendingSeekTime = currentTime;
+
+      // AUTOPLAY RECOVERY
+      if (state.isPlaying && isPowerOn) {
+        setTimeout(() => {
+          playSong(true);
+        }, 300);
+      }
+    }
+
+    // VOLUME
+    if (state.volume !== undefined && audioPlayer) {
+      audioPlayer.volume = state.volume;
+    }
+
+    return true;
+  } catch (err) {
+    console.error("Failed to load player state:", err);
+    return false;
   }
 }
+
+
+
 
 function clearPlayerState() {
   localStorage.removeItem('musicPlayerState');
@@ -669,8 +623,11 @@ function toggleQuotesMode() {
     }
     
     // Type the quote on mobile
-    const song = getTrackByDisplayIndex(currentSongIndex);
-    showQuoteInScreen();
+      const idx = getCurrentSongIndex();
+      if (idx === -1) return;
+
+      const song = getTrackByDisplayIndex(idx);
+      showQuoteInScreen();
     
     // Trigger typing animation after a short delay
     setTimeout(() => {
@@ -731,7 +688,9 @@ function showQuoteInScreen() {
       ensureScreenElements();
 
       // When showing song info, ensure quote areas are hidden
-      const song = getTrackByDisplayIndex(currentSongIndex);
+      const idx = getCurrentSongIndex();
+      if (idx === -1) return;
+      const song = getTrackByDisplayIndex(idx);
       const songInfo = screenContent.querySelector('.song-info');
       if (!songInfo) return;
       const ipodQuoteText = screenContent.querySelector('.ipod-quote-text');
@@ -843,69 +802,7 @@ function showQuoteInScreen() {
       } catch (e) {}
     }
 
-    function attachAudioListenersOnce() {
-      if (audioListenersAttached) return;
-      if (typeof audioPlayer === 'undefined' || !audioPlayer) return;
-      audioListenersAttached = true;
 
-      let saveTimeout;
-
-      audioPlayer.addEventListener('loadedmetadata', function() {
-        totalTime = Math.floor(audioPlayer.duration);
-        updateTotalTimeDisplay();
-        if (pendingSeekTime !== null) {
-          try {
-            if (pendingSeekTime < audioPlayer.duration) audioPlayer.currentTime = pendingSeekTime;
-          } catch (e) {}
-          pendingSeekTime = null;
-        }
-        // Ensure progress UI reflects newly loaded metadata and any seek
-        updateProgressBar();
-      });
-
-      audioPlayer.addEventListener('ended', function() {
-        if (isPlaying) nextSong();
-        savePlayerState();
-      });
-
-      audioPlayer.addEventListener('error', function(e) {
-        console.error("Audio error:", audioPlayer.error);
-        // Move to next display track
-        if (displayOrder.length > 0) {
-          const nextIdx = (currentSongIndex + 1) % displayOrder.length;
-          setTrack(nextIdx, { forcePlay: true, resetTime: true });
-        }
-        savePlayerState();
-      });
-
-      audioPlayer.addEventListener('play', function() {
-        isPlaying = true;
-        const playIcon = document.getElementById('playIcon');
-        if (playIcon) playIcon.className = 'fas fa-pause';
-        // Update UI immediately; rely on 'timeupdate' for ongoing updates
-        updateProgressBar();
-        savePlayerState();
-        sendPreferredMusicToSW(currentTrackId || audioPlayer.src);
-      });
-
-      audioPlayer.addEventListener('pause', function() {
-        isPlaying = false;
-        const playIcon = document.getElementById('playIcon');
-        if (playIcon) playIcon.className = 'fas fa-play';
-        // Ensure UI shows the paused position
-        updateProgressBar();
-        savePlayerState();
-      });
-
-      audioPlayer.addEventListener('timeupdate', function() {
-        currentTime = Math.floor(audioPlayer.currentTime || 0);
-        // Update progress UI on timeupdate for smooth feedback
-        updateProgressBar();
-        // Throttled save
-        clearTimeout(saveTimeout);
-        saveTimeout = setTimeout(savePlayerState, 2000);
-      });
-    }
 
     // ====== AUDIO FUNCTIONS ======
     function getAudioDuration(audioUrl, callback) {
@@ -936,7 +833,7 @@ function showQuoteInScreen() {
           getAudioDuration(song.audioUrl, (duration) => {
             // If the current display index maps to this original index, update
             const displayIdx = findDisplayIndexByTrackId(song.audioUrl);
-            if (displayIdx === currentSongIndex && totalTime === 0) {
+            if (song.audioUrl === currentTrackId && totalTime === 0) {
               totalTime = duration;
               updateTotalTimeDisplay();
             }
@@ -987,86 +884,99 @@ function showQuoteInScreen() {
     }
 
     function playSong(force = false) {
-      const song = getTrackByDisplayIndex(currentSongIndex);
-      if (!song) return;
+      if (!currentTrackId) return;
 
-      const trackId = song.audioUrl;
+      const sameTrack =
+        audioPlayer.src &&
+        new URL(audioPlayer.src, location).pathname ===
+          new URL(currentTrackId, location).pathname;
 
-      // Idempotency: if same track currently playing and not forced, do nothing
-      if (!force && currentTrackId === trackId && !audioPlayer.paused && isPlaying) {
+      // Already playing the same track → no-op
+      if (!force && sameTrack && !audioPlayer.paused) return;
+
+      // If same track but paused → just play
+      if (!force && sameTrack && audioPlayer.paused) {
+        audioPlayer.play().catch(() => {});
         return;
       }
 
-      // If same track but currently paused, just resume without reassigning src
-      if (currentTrackId === trackId && audioPlayer.paused) {
-        const playPromise = audioPlayer.play();
-        if (playPromise !== undefined) {
-          playPromise.then(() => {}).catch(() => {});
-        }
-        return;
+      // If different track or force → load new track
+      if (!sameTrack || force) {
+        audioPlayer.pause();
+        audioPlayer.src = currentTrackId;
+        pendingSeekTime = currentTime;
+        audioPlayer.load();
       }
 
-      // New track: set canonical id, set src and schedule seek after metadata
-      currentTrackId = trackId;
-      audioPlayer.src = trackId;
-      pendingSeekTime = currentTime;
-
-      const playPromise = audioPlayer.play();
-      if (playPromise !== undefined) {
-        playPromise.then(() => {
-          // state changes handled in centralized 'play' listener
-        }).catch(error => {
-          console.error("Audio playback failed:", error);
-        });
-      }
+      // Play the track
+      audioPlayer.play().catch(() => {});
     }
+
+
 
     // Centralized track switcher
-    function setTrack(displayIndex, options = {}) {
-      const { forcePlay = false, resetTime = true } = options;
-      if (!Number.isInteger(displayIndex) || displayIndex < 0 || displayIndex >= displayOrder.length) return;
-      // If same display index and not forcing a UI update, do nothing
-      if (displayIndex === currentSongIndex && !forcePlay) return;
+    function setTrackById(trackId, { forcePlay = false, resetTime = true } = {}) {
+      if (!trackId) return;
+      if (currentTrackId === trackId && !forcePlay) return;
 
-      currentSongIndex = displayIndex;
-      if (resetTime) currentTime = 0;
+      currentTrackId = trackId;
 
-      const track = getTrackByDisplayIndex(currentSongIndex);
-      totalTime = track && track.duration ? track.duration : totalTime;
+      const idx = findDisplayIndexByTrackId(trackId);
+      currentSongIndex = idx !== -1 ? idx : 0;
+
+      if (resetTime) {
+        currentTime = 0;
+        pendingSeekTime = 0;
+
+        if (audioPlayer) {
+          audioPlayer.currentTime = 0;
+        }
+      }
 
       updateSongDisplay();
-      updateCardDeck();
       updateQuoteFromSong();
-      if (isPlaylistOpen) renderPlaylist();
+      updateProgressBar();
+      updateCardDeck();
 
-      if (forcePlay) playSong(true);
-      savePlayerState();
+      if (forcePlay) {
+        playSong(true);
+      }
     }
+
+
+    function setTrack(index, options = {}) {
+      const song = getTrackByDisplayIndex(index);
+      if (!song) return;
+      setTrackById(song.audioUrl, options);
+    }
+
+
 
     function pauseSong() {
       audioPlayer.pause();
-      isPlaying = false;
-      const playIcon = document.getElementById('playIcon');
-      if (playIcon) playIcon.className = 'fas fa-play';
-      // progress is updated via 'timeupdate' event
-      updateProgressBar();
-      savePlayerState()
     }
 
     function nextSong() {
-      const nextIdx = (currentSongIndex + 1) % displayOrder.length;
+      const idx = getCurrentSongIndex();
+      if (idx === -1) return;
+
+      const nextIdx = (idx + 1) % displayOrder.length;
       setTrack(nextIdx, { forcePlay: true, resetTime: true });
     }
 
     function prevSong() {
-      const prevIdx = (currentSongIndex - 1 + displayOrder.length) % displayOrder.length;
+      const idx = getCurrentSongIndex();
+      if (idx === -1) return;
+
+      const prevIdx = (idx - 1 + displayOrder.length) % displayOrder.length;
       setTrack(prevIdx, { forcePlay: true, resetTime: true });
     }
+
 
     function shuffleSongs() {
       if (!isPowerOn) return;
       // Shuffle the display order only (do not mutate originalLibrary)
-      const currentlyPlayingId = currentTrackId || (getTrackByDisplayIndex(currentSongIndex) || {}).audioUrl;
+      const currentlyPlayingId = currentTrackId;
       const newOrder = displayOrder.slice();
       for (let i = newOrder.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
@@ -1079,7 +989,12 @@ function showQuoteInScreen() {
       const targetIdx = newDisplayIdx !== -1 ? newDisplayIdx : 0;
 
       // Use setTrack: if we were playing, continue playing; otherwise just update UI
-      setTrack(targetIdx, { forcePlay: !!isPlaying, resetTime: true });
+      const isSame = currentlyPlayingId === currentTrackId;
+
+        setTrack(targetIdx, {
+          forcePlay: !!isPlaying,
+          resetTime: !isSame
+        });
 
       const shuffleBtn = document.getElementById('shuffleBtn');
       if (shuffleBtn) {
@@ -1106,7 +1021,9 @@ function showQuoteInScreen() {
 
     // ====== DISPLAY FUNCTIONS ======
     function updateSongDisplay() {
-      const song = getTrackByDisplayIndex(currentSongIndex);
+      const idx = getCurrentSongIndex();
+      if (idx === -1) return;
+      const song = getTrackByDisplayIndex(idx);
       const songTitle = document.getElementById('songTitle');
       const songArtist = document.getElementById('songArtist');
       const screenImage = document.getElementById('screenImage');
@@ -1114,6 +1031,9 @@ function showQuoteInScreen() {
       if (songTitle) songTitle.textContent = song.title;
       if (songArtist) songArtist.textContent = song.artist;
       if (screenImage) screenImage.src = song.image;
+      
+      // update HTML title
+      document.title = `${song.title} — ${song.artist}`;
       
       if (song && !audioDurations[song.audioUrl]) {
         getAudioDuration(song.audioUrl, (duration) => {
@@ -1132,10 +1052,8 @@ function showQuoteInScreen() {
       if (isQuotesMode && isMobileView) {
         showQuoteInScreen();
       }
-
-      // Ensure canonical id matches displayed track
-      if (song && song.audioUrl) currentTrackId = song.audioUrl;
     }
+
 
     function updateProgressBar() {
       // Prefer using audio element values when available, but tolerate missing duration
@@ -1167,7 +1085,9 @@ function showQuoteInScreen() {
     }
 
 function updateQuoteFromSong() {
-  const song = getTrackByDisplayIndex(currentSongIndex);
+  const idx = getCurrentSongIndex();
+  if (idx === -1) return;
+  const song = getTrackByDisplayIndex(idx);
   const currentQuoteEl = document.getElementById('currentQuote');
   const currentAuthorEl = document.getElementById('currentAuthor');
   
@@ -1251,15 +1171,16 @@ function updateQuoteFromSong() {
     }
 
     function updateCardDeck() {
+      const currentIndex = getCurrentSongIndex();
+      if (currentIndex === -1) return;
+
       cards.forEach((card, index) => {
-        if (index === currentSongIndex) {
+        if (index === currentIndex) {
           card.classList.add('playing');
           card.classList.remove('card-back');
         } else {
           card.classList.remove('playing');
-          if (!card.classList.contains('card-back')) {
-            card.classList.add('card-back');
-          }
+          card.classList.add('card-back');
         }
       });
     }
@@ -1290,6 +1211,7 @@ function updateQuoteFromSong() {
       
       playlistContainer.innerHTML = '';
       let totalDuration = 0;
+      const currentIndex = getCurrentSongIndex();
       displayOrder.forEach((origIdx, index) => {
         const song = originalLibrary[origIdx];
         const duration = audioDurations[song.audioUrl] || 0;
@@ -1297,7 +1219,7 @@ function updateQuoteFromSong() {
 
         const playlistItem = document.createElement('div');
         playlistItem.className = 'playlist-item';
-        if (index === currentSongIndex) playlistItem.classList.add('playing');
+        if (index === currentIndex) playlistItem.classList.add('playing');
         playlistItem.dataset.index = index;
 
         playlistItem.innerHTML = `
@@ -1308,15 +1230,16 @@ function updateQuoteFromSong() {
             <div class="playlist-item-title">${song.title}</div>
             <div class="playlist-item-artist">${song.artist}</div>
           </div>
-          ${index === currentSongIndex 
+          ${index === currentIndex 
             ? '<div class="playlist-item-playing"><i class="fas fa-volume-up"></i></div>' 
             : `<div class="playlist-item-duration">${formatTime(duration)}</div>`}
         `;
 
         playlistItem.addEventListener('click', function() {
           const clickedIndex = parseInt(this.dataset.index);
+          const currentIndex = getCurrentSongIndex();
 
-          if (clickedIndex === currentSongIndex) {
+          if (clickedIndex === currentIndex) {
             if (isPlaying) {
               pauseSong();
             } else {
@@ -1383,12 +1306,13 @@ function updateQuoteFromSong() {
     document.addEventListener('DOMContentLoaded', function() {
       // Get audio player
       audioPlayer = document.getElementById('audioPlayer');
+      ensureScreenElements()
 
         // Load saved player state
-  const stateLoaded = loadPlayerState();
+      const stateLoaded = loadPlayerState();
 
     // Initialize background video
-  initBackgroundVideo();
+      initBackgroundVideo();
       
       // Theme toggle
       const themeToggleIpod = document.getElementById('themeToggleIpod');
@@ -1405,6 +1329,7 @@ function updateQuoteFromSong() {
     createCardDeck();
     updateSongDisplay();
     updateProgressBar();
+    setTrack(0, { forcePlay: isPowerOn, resetTime: true });
     updateQuoteFromSong();
     updateThemeIcon();
     preloadAudioDurations();
