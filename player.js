@@ -124,7 +124,7 @@ async function cacheAudio(url) {
   if (!('caches' in window)) return;
 
   try {
-    const cache = await caches.open('music-cache');
+    const cache = await caches.open('music-v1');
 
     // **Check if already cached**
     const cachedResponse = await cache.match(url);
