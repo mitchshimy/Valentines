@@ -121,17 +121,31 @@ return false;
 }
 
 async function cacheAudio(url) {
-if (!('caches' in window)) return;
-try {
-const cache = await caches.open('music-cache');
-const response = await fetch(url);
-if (response.ok) {
-await cache.put(url, response.clone());
+  if (!('caches' in window)) return;
+
+  try {
+    const cache = await caches.open('audio-cache');
+
+    // **Check if already cached**
+    const cachedResponse = await cache.match(url);
+    if (cachedResponse) return;
+
+    // Fetch the audio
+    const resp = await fetch(url, { mode: 'cors' });
+
+    // Clone response because Response body can only be used once
+    const respClone = resp.clone();
+
+    // Put into cache
+    await cache.put(url, respClone);
+
+    console.log('Audio cached:', url);
+  } catch (err) {
+    // Handle network errors or mobile caching issues gracefully
+    console.warn('Audio caching failed:', url, err);
+  }
 }
-} catch (e) {
-console.warn('Audio caching failed:', e);
-}
-}
+
 
 
 // Keep an immutable copy reference (original indices are canonical)
@@ -937,7 +951,7 @@ if (isPlaying) {
 }
 
 
-function playSong(force = false) {
+async function playSong(force = false) {
   if (!currentTrackId) return;
 
   const sameTrack =
@@ -963,19 +977,24 @@ function playSong(force = false) {
   }
 
   // Play immediately
-  audioPlayer.play().catch(() => {});
+  await audioPlayer.play().catch(() => {});
 
-  // Start caching in background, don't block playback
+  // Start caching current track in background
   if ('caches' in window) {
     isAudioCached(currentTrackId)
       .then(cached => {
         if (!cached) cacheAudio(currentTrackId);
       })
       .catch(() => {
-        cacheAudio(currentTrackId); // fallback
+        cacheAudio(currentTrackId);
       });
   }
+
+  // Prefetch next track safely, async, no blocking
+  prefetchNextTrackSafely();
 }
+
+
 
 
 
@@ -1010,6 +1029,9 @@ function setTrackById(trackId, { forcePlay = false, resetTime = true } = {}) {
   sendPreferredMusicToSW(trackId);
 }
 
+
+let isPrefetching = false;
+
 async function prefetchNextTrackSafely() {
   if (!('serviceWorker' in navigator)) return;
   if (!navigator.serviceWorker.controller) return;
@@ -1020,21 +1042,35 @@ async function prefetchNextTrackSafely() {
   if (conn && conn.saveData) return;
   if (conn && conn.effectiveType && conn.effectiveType.includes('2g')) return;
 
-  const idx = getCurrentSongIndex();
-  if (idx === -1) return;
+  // Prevent multiple prefetches simultaneously
+  if (isPrefetching) return;
+  isPrefetching = true; 
 
-  const nextIdx = (idx + 1) % displayOrder.length;
-  const nextTrack = getTrackByDisplayIndex(nextIdx);
-  if (!nextTrack || !nextTrack.audioUrl) return;
+  try {
+    const idx = getCurrentSongIndex();
+    if (idx === -1) return;
 
-  // Try caching next track proactively
-  await cacheAudio(nextTrack.audioUrl);
+    const nextIdx = (idx + 1) % displayOrder.length;
+    const nextTrack = getTrackByDisplayIndex(nextIdx);
+    if (!nextTrack || !nextTrack.audioUrl) return;
 
-  navigator.serviceWorker.controller.postMessage({
-    type: 'prefetch-music',
-    url: nextTrack.audioUrl
-  });
+    console.log("Prefetching next track:", nextTrack.audioUrl);
+
+    // Try caching next track proactively
+    await cacheAudio(nextTrack.audioUrl);
+
+    navigator.serviceWorker.controller.postMessage({
+      type: 'prefetch-music',
+      url: nextTrack.audioUrl
+    });
+  } catch (err) {
+    console.warn("Prefetch failed:", err);
+  } finally {
+    isPrefetching = false;
+  }
 }
+
+
 
 
 function setTrack(index, options = {}) {
