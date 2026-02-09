@@ -165,9 +165,24 @@
       totalTime = Math.floor(audioPlayer.duration || 0);
       updateTotalTimeDisplay();
 
-      if (pendingSeekTime != null) {
-        audioPlayer.currentTime = pendingSeekTime;
-        pendingSeekTime = null;
+      // Seek to saved position if we have one (for page reload resume)
+      if (pendingSeekTime != null && pendingSeekTime > 0) {
+        // Use a small delay to ensure audio element is ready
+        setTimeout(() => {
+          if (audioPlayer.readyState >= 2) { // HAVE_CURRENT_DATA or higher
+            audioPlayer.currentTime = pendingSeekTime;
+            currentTime = Math.floor(pendingSeekTime);
+            updateProgressBar();
+          } else {
+            // If not ready yet, wait a bit more
+            setTimeout(() => {
+              audioPlayer.currentTime = pendingSeekTime;
+              currentTime = Math.floor(pendingSeekTime);
+              updateProgressBar();
+            }, 100);
+          }
+          pendingSeekTime = null;
+        }, 50);
       }
     }
 
@@ -215,7 +230,9 @@ function savePlayerState() {
     isPlaying: isPlaying,
     isPowerOn: isPowerOn,
     theme: document.body.dataset.theme || "",
-    volume: audioPlayer.volume || 1
+    volume: audioPlayer.volume || 1,
+    // Persist audio durations so playlist shows correct times after refresh
+    audioDurations: audioDurations
   };
   localStorage.setItem('musicPlayerState', JSON.stringify(playerState));
 }
@@ -282,6 +299,11 @@ function loadPlayerState() {
     // VOLUME
     if (state.volume !== undefined && audioPlayer) {
       audioPlayer.volume = state.volume;
+    }
+
+    // RESTORE AUDIO DURATIONS (so playlist shows correct times after refresh)
+    if (state.audioDurations && typeof state.audioDurations === 'object') {
+      audioDurations = Object.assign({}, state.audioDurations);
     }
 
     return true;
@@ -786,7 +808,7 @@ function showQuoteInScreen() {
       }
     }
 
-    // Centralized audio listeners (attach once)
+    // Tell the service worker which music URL should be prioritized
     function sendPreferredMusicToSW(url) {
       try {
         if (!isPowerOn) return;
@@ -802,14 +824,143 @@ function showQuoteInScreen() {
       } catch (e) {}
     }
 
+    // Proactively warm up the music cache by fetching all tracks once.
+    // This relies on the service worker's music-first strategy to cache responses.
+    function warmUpMusicCache() {
+      try {
+        if (!('serviceWorker' in navigator)) return;
+        if (!originalLibrary || !originalLibrary.length) return;
 
+        const urls = originalLibrary
+          .map(track => track && track.audioUrl)
+          .filter(Boolean);
+        if (!urls.length) return;
+
+        // Use small concurrency to avoid overwhelming mobile networks
+        let concurrency = 3;
+        try {
+          const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+          if (conn && conn.effectiveType && /2g/i.test(conn.effectiveType)) {
+            concurrency = 2;
+          }
+        } catch (e) {}
+
+        let index = 0;
+        function worker() {
+          if (index >= urls.length) return;
+          const url = urls[index++];
+          // Fire-and-forget: fetching will cause the SW to cache the response
+          fetch(url).catch(() => {}).finally(() => {
+            worker();
+          });
+        }
+
+        for (let i = 0; i < concurrency && i < urls.length; i++) {
+          worker();
+        }
+      } catch (e) {}
+    }
+
+    // Generate complete asset list from music library for service worker caching
+    // This is player-specific knowledge - SW shouldn't know what assets exist
+    function getAssetList() {
+      const assets = [];
+      
+      // Add all music files from library
+      if (originalLibrary && originalLibrary.length) {
+        originalLibrary.forEach(track => {
+          if (track.audioUrl) assets.push(track.audioUrl);
+          if (track.image) assets.push(track.image);
+        });
+      }
+      
+      // Add other images used by the player
+      const additionalImages = [
+        'assets/images/1.jpg',
+        'assets/images/2.jpg',
+        'assets/images/3.jpg',
+        'assets/images/4.jpg',
+        'assets/images/5.jpg',
+        'assets/images/6.jpg',
+        'assets/images/7.jpg',
+        'assets/images/8.jpg',
+        'assets/images/9.jpg',
+        'assets/images/16400503_v722-aum-36b.jpg',
+        'assets/images/2151930103.jpg',
+        'assets/images/landscape.jpg',
+        'assets/images/background-dark.mp4',
+        'assets/images/background.png',
+        'assets/images/kakashi.png'
+      ];
+      
+      assets.push(...additionalImages);
+      
+      // Remove duplicates
+      return Array.from(new Set(assets));
+    }
+
+    // Prefetch upcoming tracks in the playlist to ensure smooth playback
+    // This is called when a track starts playing to prefetch the next few tracks
+    function prefetchUpcomingTracks(currentTrackId, count = 3) {
+      try {
+        if (!('serviceWorker' in navigator)) return;
+        if (!originalLibrary || !originalLibrary.length) return;
+        if (!currentTrackId) return;
+
+        const currentIdx = originalLibrary.findIndex(t => t.audioUrl === currentTrackId);
+        if (currentIdx === -1) return;
+
+        // Get the next few tracks in display order
+        const currentDisplayIdx = findDisplayIndexByTrackId(currentTrackId);
+        if (currentDisplayIdx === -1) return;
+
+        const urlsToPrefetch = [];
+        for (let i = 1; i <= count; i++) {
+          const nextDisplayIdx = (currentDisplayIdx + i) % displayOrder.length;
+          const track = getTrackByDisplayIndex(nextDisplayIdx);
+          if (track && track.audioUrl) {
+            urlsToPrefetch.push(track.audioUrl);
+          }
+        }
+
+        // Prefetch in parallel (fire-and-forget)
+        urlsToPrefetch.forEach(url => {
+          fetch(url).catch(() => {});
+        });
+      } catch (e) {}
+    }
 
     // ====== AUDIO FUNCTIONS ======
+    // Deduplicate concurrent duration fetches so we don't spawn multiple <audio> loaders per URL.
+    let durationCallbacks = {}; // audioUrl -> Array<Function>
+    let playlistRerenderScheduled = false;
+
+    function schedulePlaylistRerender() {
+      try {
+        if (playlistRerenderScheduled) return;
+        playlistRerenderScheduled = true;
+        requestAnimationFrame(() => {
+          playlistRerenderScheduled = false;
+          if (isPlaylistOpen) renderPlaylist();
+        });
+      } catch (e) {
+        // fallback: just try immediately
+        try { if (isPlaylistOpen) renderPlaylist(); } catch (e2) {}
+      }
+    }
+
     function getAudioDuration(audioUrl, callback) {
       if (audioDurations[audioUrl]) {
         callback(audioDurations[audioUrl]);
         return;
       }
+
+      // If a fetch is already in progress for this url, queue the callback.
+      if (durationCallbacks[audioUrl]) {
+        durationCallbacks[audioUrl].push(callback);
+        return;
+      }
+      durationCallbacks[audioUrl] = [callback];
       
       const tempAudio = new Audio();
       tempAudio.preload = 'metadata';
@@ -818,28 +969,59 @@ function showQuoteInScreen() {
       tempAudio.addEventListener('loadedmetadata', function() {
         const duration = Math.floor(tempAudio.duration);
         audioDurations[audioUrl] = duration;
-        callback(duration);
+        // Save state when we discover a new duration (so playlist persists after refresh)
+        savePlayerState();
+        const cbs = durationCallbacks[audioUrl] || [];
+        delete durationCallbacks[audioUrl];
+        cbs.forEach(cb => { try { cb(duration); } catch (e) {} });
       });
       
       tempAudio.addEventListener('error', function() {
         console.warn(`Could not load duration for: ${audioUrl}`);
-        callback(0);
+        const cbs = durationCallbacks[audioUrl] || [];
+        delete durationCallbacks[audioUrl];
+        cbs.forEach(cb => { try { cb(0); } catch (e) {} });
       });
     }
 
     function preloadAudioDurations() {
-      originalLibrary.forEach((song, index) => {
-        if (!audioDurations[song.audioUrl]) {
-          getAudioDuration(song.audioUrl, (duration) => {
-            // If the current display index maps to this original index, update
-            const displayIdx = findDisplayIndexByTrackId(song.audioUrl);
-            if (song.audioUrl === currentTrackId && totalTime === 0) {
-              totalTime = duration;
-              updateTotalTimeDisplay();
-            }
+      try {
+        const urls = (originalLibrary || [])
+          .map(s => s && s.audioUrl)
+          .filter(Boolean)
+          .filter(u => !audioDurations[u]);
+
+        if (!urls.length) return;
+
+        // Keep concurrency small; mobile browsers can be flaky with too many parallel metadata requests.
+        const concurrency = 2;
+        let idx = 0;
+
+        function loadOne(url) {
+          return new Promise(resolve => {
+            getAudioDuration(url, (duration) => {
+              // If this is the current track and we don't know its total yet, update total time.
+              if (url === currentTrackId && totalTime === 0) {
+                totalTime = duration;
+                updateTotalTimeDisplay();
+              }
+
+              // If playlist is open, refresh it so durations update from 0:00 -> real values.
+              schedulePlaylistRerender();
+              resolve();
+            });
           });
         }
-      });
+
+        async function worker() {
+          while (idx < urls.length) {
+            const url = urls[idx++];
+            try { await loadOne(url); } catch (e) {}
+          }
+        }
+
+        Promise.all(new Array(Math.min(concurrency, urls.length)).fill(0).map(() => worker()));
+      } catch (e) {}
     }
 
     // ====== PLAYER FUNCTIONS ======
@@ -904,12 +1086,23 @@ function showQuoteInScreen() {
       if (!sameTrack || force) {
         audioPlayer.pause();
         audioPlayer.src = currentTrackId;
-        pendingSeekTime = currentTime;
+        // Only set pendingSeekTime if not already set (preserve restore from loadPlayerState)
+        if (pendingSeekTime == null) {
+          pendingSeekTime = currentTime;
+        }
         audioPlayer.load();
       }
 
-      // Play the track
-      audioPlayer.play().catch(() => {});
+      // Play the track - ensure it works even if not cached (network fallback)
+      audioPlayer.play().catch((err) => {
+        // If play fails, try again after a short delay (might be loading)
+        setTimeout(() => {
+          audioPlayer.play().catch(() => {});
+        }, 100);
+      });
+
+      // Prefetch upcoming tracks for smooth playback when user skips ahead
+      prefetchUpcomingTracks(currentTrackId, 3);
     }
 
 
@@ -932,6 +1125,14 @@ function showQuoteInScreen() {
           audioPlayer.currentTime = 0;
         }
       }
+
+      // Notify service worker about the current track so it can prioritize caching
+      sendPreferredMusicToSW(trackId);
+
+      // Immediately prefetch this track and upcoming tracks to ensure smooth playback
+      // This handles the edge case where user spams next button or selects random song
+      fetch(trackId).catch(() => {}); // Prefetch current track
+      prefetchUpcomingTracks(trackId, 3); // Prefetch next 3 tracks
 
       updateSongDisplay();
       updateQuoteFromSong();
@@ -975,8 +1176,11 @@ function showQuoteInScreen() {
 
     function shuffleSongs() {
       if (!isPowerOn) return;
-      // Shuffle the display order only (do not mutate originalLibrary)
+      // Shuffle UI order only (do not mutate originalLibrary), without touching playback.
+      // IMPORTANT: Shuffle must be silent: no audio reload, no play/pause toggles,
+      // and MUST NOT re-trigger quote typing unless the track actually changes.
       const currentlyPlayingId = currentTrackId;
+
       const newOrder = displayOrder.slice();
       for (let i = newOrder.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
@@ -984,17 +1188,16 @@ function showQuoteInScreen() {
       }
       displayOrder = newOrder;
 
-      // Keep the same track playing by finding its new display index
-      const newDisplayIdx = findDisplayIndexByTrackId(currentlyPlayingId);
-      const targetIdx = newDisplayIdx !== -1 ? newDisplayIdx : 0;
+      // Update the "currentSongIndex" (UI highlight) to the new display index of the same track.
+      // Do NOT call setTrack()/setTrackById() here (they update quotes and can reload audio).
+      if (currentlyPlayingId) {
+        const newDisplayIdx = findDisplayIndexByTrackId(currentlyPlayingId);
+        currentSongIndex = newDisplayIdx !== -1 ? newDisplayIdx : 0;
+      }
 
-      // Use setTrack: if we were playing, continue playing; otherwise just update UI
-      const isSame = currentlyPlayingId === currentTrackId;
-
-        setTrack(targetIdx, {
-          forcePlay: !!isPlaying,
-          resetTime: !isSame
-        });
+      // Refresh UI-only pieces.
+      updateCardDeck();
+      if (isPlaylistOpen) renderPlaylist();
 
       const shuffleBtn = document.getElementById('shuffleBtn');
       if (shuffleBtn) {
@@ -1059,8 +1262,15 @@ function showQuoteInScreen() {
       // Prefer using audio element values when available, but tolerate missing duration
       const hasDuration = !!(audioPlayer && audioPlayer.duration && !isNaN(audioPlayer.duration) && audioPlayer.duration > 0);
       if (audioPlayer) {
-        if (typeof audioPlayer.currentTime === 'number') currentTime = Math.floor(audioPlayer.currentTime || 0);
-        if (hasDuration) totalTime = Math.floor(audioPlayer.duration);
+        // Only trust the audio element's currentTime once we actually have a duration
+        // (i.e., metadata has loaded). This avoids clobbering a restored resume position
+        // before the track is loaded on page refresh.
+        if (hasDuration && typeof audioPlayer.currentTime === 'number') {
+          currentTime = Math.floor(audioPlayer.currentTime || 0);
+        }
+        if (hasDuration) {
+          totalTime = Math.floor(audioPlayer.duration);
+        }
       }
 
       if (!hasDuration && !totalTime) return; // nothing sensible to display yet
@@ -1332,7 +1542,6 @@ function updateQuoteFromSong() {
     setTrack(0, { forcePlay: isPowerOn, resetTime: true });
     updateQuoteFromSong();
     updateThemeIcon();
-    preloadAudioDurations();
   } else {
     if (isPowerOn) {
       enableControls();
@@ -1340,6 +1549,9 @@ function updateQuoteFromSong() {
       disableControls();
     }
   }
+
+  // Always preload durations so playlist shows real lengths without waiting for playback.
+  preloadAudioDurations();
 
   setupAutoSave();
 
@@ -1490,6 +1702,14 @@ function updateQuoteFromSong() {
 
       // Try sending once after initialization
       setTimeout(sendPreferredFromState, 900);
+
+      // Note: letter.js already sends complete asset list for caching during typing
+      // No need to duplicate the cache-rest request here
+
+      // Start cache warming immediately (don't wait) to handle fast user interactions
+      // This ensures tracks are cached even if user spams next button or selects random song
+      // Run in next tick to not block initialization
+      setTimeout(warmUpMusicCache, 100);
 
       // When the SW controller changes (new SW), resend preferred
       navigator.serviceWorker.addEventListener('controllerchange', () => {

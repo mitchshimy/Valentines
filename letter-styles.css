@@ -50,6 +50,42 @@ body::before {
     width: 90%;
 }
 
+
+.hero-image {
+    width: 100%;
+    margin-bottom: 25px;
+    position: relative;
+}
+
+.hero-image img {
+    width: 100%;
+    max-height: 320px;
+    object-fit: contain;
+    border-radius: 18px;
+
+    /* soft glow + depth */
+    box-shadow:
+        0 10px 30px rgba(255, 105, 135, 0.35),
+        0 0 40px rgba(255, 182, 193, 0.25);
+
+    animation: fadeIn 1.8s ease-in-out;
+}
+
+/* subtle romantic glow pulse */
+.hero-image::after {
+    content: "";
+    position: absolute;
+    inset: -10px;
+    border-radius: 22px;
+    background: radial-gradient(
+        circle at center,
+        rgba(255, 105, 180, 0.25),
+        transparent 70%
+    );
+    z-index: -1;
+}
+
+
 .content h1 {
     font-family: 'Pacifico', cursive;
     font-size: 3em;

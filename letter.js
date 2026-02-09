@@ -122,7 +122,40 @@ function startLetterTypingAnimation() {
     isTyping = true;
 
     // Tell the service worker to start background caching while the letter types
-    sendMessageToSW({ type: 'cache-rest' });
+    // Send complete asset list so caching starts immediately during typing animation
+    // This is perfect timing - user waits for typing, assets cache in background
+    const allAssets = [
+      // Images used by letter page
+      'assets/images/kakashi.png',
+      'assets/images/landscape.jpg',
+      
+      // All music files - cache these during typing so player loads instantly
+      'assets/music/chikwere.mp3',
+      'assets/music/noonelikeyou.mp3',
+      'assets/music/itsyou.mp3',
+      'assets/music/happyyouremine.mp3',
+      'assets/music/feelmylove.mp3',
+      'assets/music/littlethings.mp3',
+      'assets/music/feelthelove.mp3',
+      'assets/music/residuals.mp3',
+      'assets/music/najuta.mp3',
+      
+      // All images used by player
+      'assets/images/1.jpg',
+      'assets/images/2.jpg',
+      'assets/images/3.jpg',
+      'assets/images/4.jpg',
+      'assets/images/5.jpg',
+      'assets/images/6.jpg',
+      'assets/images/7.jpg',
+      'assets/images/8.jpg',
+      'assets/images/9.jpg',
+      'assets/images/16400503_v722-aum-36b.jpg',
+      'assets/images/2151930103.jpg',
+      'assets/images/background-dark.mp4',
+      'assets/images/background.png'
+    ];
+    sendMessageToSW({ type: 'cache-rest', assets: allAssets });
 
     const paragraphs = document.querySelectorAll('.letter-content p');
     if (!paragraphs.length) return;

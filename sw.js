@@ -133,36 +133,6 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // If the page requests a virtual 'current-music' path, return the preferred track if available
-  if (url.pathname === '/current-music' && preferredMusicUrl) {
-    event.respondWith((async () => {
-      const cache = await caches.open(MUSIC_CACHE);
-      const cached = await cache.match(preferredMusicUrl);
-      if (cached) return cached;
-      try {
-        const resp = await fetch(preferredMusicUrl);
-        if (resp && (resp.status === 200 || resp.status === 206)) {
-          try {
-            try {
-              const putUrl = new URL(preferredMusicUrl, self.location.origin);
-              if ((putUrl.protocol === 'http:' || putUrl.protocol === 'https:') && putUrl.origin === self.location.origin) {
-                  await cache.put(preferredMusicUrl, resp.clone());
-                } else {
-                  notifyClients({ level: 'warn', msg: 'Skipped caching preferredMusic (origin/scheme)', url: preferredMusicUrl });
-                }
-            } catch (e) {
-              // skip caching for unsupported/invalid URLs
-            }
-          } catch (e) {}
-        }
-        return resp;
-      } catch (e) {
-        return caches.match(preferredMusicUrl) || new Response('', { status: 503 });
-      }
-    })());
-    return;
-  }
-
   // Default: cache-first then network, cache runtime responses
   event.respondWith(
     caches.match(event.request).then(cached => {
@@ -193,31 +163,48 @@ self.addEventListener('fetch', event => {
 
 async function musicFirst(request) {
   try {
-    // Try any cache (precache, bg, music, runtime)
+    // Try any cache (precache, bg, music, runtime) first
     const cached = await caches.match(request);
     if (cached) return cached;
-    // Otherwise fetch from network and store into MUSIC_CACHE for priority
-    const response = await fetch(request);
-    if (response && (response.status === 200 || response.status === 206)) {
-      try {
-        const musicCache = await caches.open(MUSIC_CACHE);
-        try {
-          const reqUrl = new URL(request.url);
-          if ((reqUrl.protocol === 'http:' || reqUrl.protocol === 'https:') && reqUrl.origin === self.location.origin) {
-            await musicCache.put(request, response.clone());
-          } else {
-            notifyClients({ level: 'warn', msg: 'Skipped MUSIC_CACHE.put (non-same-origin or unsupported scheme)', url: request.url });
+    
+    // If not cached, fetch from network - this ensures playback never fails
+    // even if caching fails, the network response is returned
+    try {
+      const response = await fetch(request);
+      
+      // Always return the network response for playback, even if caching fails
+      // This ensures graceful fallback when cache is unavailable
+      if (response && (response.status === 200 || response.status === 206)) {
+        // Try to cache in background (fire-and-forget) - don't block playback
+        (async () => {
+          try {
+            const musicCache = await caches.open(MUSIC_CACHE);
+            try {
+              const reqUrl = new URL(request.url);
+              if ((reqUrl.protocol === 'http:' || reqUrl.protocol === 'https:') && reqUrl.origin === self.location.origin) {
+                await musicCache.put(request, response.clone());
+              }
+            } catch (e) {
+              // skip caching if request URL is not acceptable
+            }
+          } catch (e) {
+            // Caching failed, but that's OK - we still return the network response
           }
-        } catch (e) {
-          // skip caching if request URL is not acceptable
-        }
-      } catch (e) { /* ignore */ }
-    } else {
-      notifyClients({ level: 'warn', msg: 'Fetch returned non-cacheable status for musicFirst', url: request.url, status: response && response.status });
+        })();
+      }
+      
+      // Return network response regardless of caching success
+      return response;
+    } catch (networkError) {
+      // Network fetch failed - try to return any cached version as fallback
+      const fallback = await caches.match(request);
+      if (fallback) return fallback;
+      
+      // Last resort: return error response (but this should rarely happen)
+      return new Response('', { status: 503, statusText: 'Service Unavailable' });
     }
-    return response;
   } catch (e) {
-    // On error, fall back to runtime or precache
+    // Final fallback: try any cache
     const fallback = await caches.match(request);
     return fallback || new Response('', { status: 503, statusText: 'Service Unavailable' });
   }
@@ -225,8 +212,10 @@ async function musicFirst(request) {
 
 self.addEventListener('message', event => {
   if (!event.data) return;
-  if (event.data.type === 'cache-rest') {
-    cacheRestAssets();
+  
+  // Cache assets - player sends the list of assets to cache
+  if (event.data.type === 'cache-rest' && Array.isArray(event.data.assets)) {
+    cacheRestAssets(event.data.assets);
     return;
   }
 
@@ -250,59 +239,56 @@ self.addEventListener('message', event => {
 async function prefetchPreferredMusic(url) {
   try {
     const cache = await caches.open(MUSIC_CACHE);
-    // Already cached?
-    const existing = await cache.match(url);
-    if (existing) return;
-    const resp = await fetch(url);
-    if (resp && (resp.status === 200 || resp.status === 206)) {
-      try {
-        try {
-          const putUrl = new URL(url, self.location.origin);
-          if ((putUrl.protocol === 'http:' || putUrl.protocol === 'https:') && putUrl.origin === self.location.origin) {
-            await cache.put(url, resp.clone());
-          }
-        } catch (e) {
-          // skip caching for unsupported/invalid URLs
-        }
-      } catch (e) { }
-    }
-    else {
-      notifyClients({ level: 'warn', msg: 'Prefetch returned non-cacheable status', url });
-    }
+    // Use retry logic for reliability (especially important on mobile)
+    await cacheWithRetry(cache, url, 2);
   } catch (e) {
     // ignore failures
   }
 }
 
-async function cacheRestAssets() {
-  const assets = [
-    // images (exclude already precached background files)
-    'assets/images/1.jpg',
-    'assets/images/2.jpg',
-    'assets/images/3.jpg',
-    'assets/images/4.jpg',
-    'assets/images/5.jpg',
-    'assets/images/6.jpg',
-    'assets/images/7.jpg',
-    'assets/images/8.jpg',
-    'assets/images/9.jpg',
-    'assets/images/16400503_v722-aum-36b.jpg',
-    'assets/images/2151930103.jpg',
-    'assets/images/landscape.jpg',
-    'assets/images/background-dark.mp4',
-    'assets/images/background.png',
+// Retry helper for cache operations (important for mobile reliability)
+async function cacheWithRetry(cache, url, maxRetries = 2) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      // Check if already cached
+      const existing = await cache.match(url);
+      if (existing) return true;
+      
+      // Try to fetch and cache
+      const response = await fetch(url);
+      if (response && (response.status === 200 || response.status === 206)) {
+        try {
+          const reqUrl = new URL(url, self.location.origin);
+          if ((reqUrl.protocol === 'http:' || reqUrl.protocol === 'https:') && reqUrl.origin === self.location.origin) {
+            await cache.put(url, response);
+            return true;
+          }
+        } catch (e) {
+          // URL validation failed, skip
+        }
+      }
+      // If we got here, the response wasn't cacheable, but don't retry
+      return false;
+    } catch (e) {
+      // On last attempt, give up
+      if (attempt === maxRetries) {
+        notifyClients({ level: 'warn', msg: 'Cache retry exhausted', url, attempts: attempt + 1 });
+        return false;
+      }
+      // Wait before retry (exponential backoff)
+      await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+    }
+  }
+  return false;
+}
 
-    // music (exclude already precached first track)
-    'assets/music/chikwere.mp3',
-    'assets/music/noonelikeyou.mp3',
-    'assets/music/itsyou.mp3',
-    'assets/music/happyyouremine.mp3',
-    'assets/music/feelmylove.mp3',
-    'assets/music/littlethings.mp3',
-    'assets/music/feelthelove.mp3',
-    'assets/music/residuals.mp3',
-    'assets/music/najuta.mp3'
-  ];
+// Cache assets provided by the player - SW doesn't know what assets exist
+async function cacheRestAssets(assets) {
+  // Validate input - player must provide asset list
+  if (!Array.isArray(assets) || assets.length === 0) {
+    notifyClients({ level: 'warn', msg: 'cacheRestAssets called without asset list' });
+    return;
+  }
 
   try {
     const bgCache = await caches.open(BG_CACHE);
@@ -323,29 +309,27 @@ async function cacheRestAssets() {
 
     const dedupPriority = Array.from(new Set(priority)).filter(Boolean);
 
-    // Prefetch priority music without stagger (in parallel)
+    // Prefetch priority music without stagger (in parallel) with retry
     await Promise.all(dedupPriority.map(async m => {
-      try {
-        await musicCache.add(m);
+      const cached = await cacheWithRetry(musicCache, m, 2);
+      if (cached) {
         notifyClients({ level: 'info', msg: 'Prefetched priority music', url: m });
-      } catch (e) {
-        notifyClients({ level: 'warn', msg: 'Priority music prefetch failed', url: m });
       }
     }));
 
-    // For the remaining music assets, run a small concurrency pool so music caching proceeds faster
+    // For the remaining music assets, use adaptive concurrency for mobile
+    // Lower concurrency on mobile helps avoid overwhelming the network
     const remainingMusic = musicAssets.filter(a => !dedupPriority.includes(a));
-    const concurrency = 3; // number of parallel music fetches
+    // Use lower concurrency (2) to be more mobile-friendly
+    const concurrency = 2;
     let idx = 0;
     async function worker() {
       while (idx < remainingMusic.length) {
         const i = idx++;
         const m = remainingMusic[i];
-        try {
-          await musicCache.add(m);
+        const cached = await cacheWithRetry(musicCache, m, 2);
+        if (cached) {
           notifyClients({ level: 'info', msg: 'Cached music', url: m });
-        } catch (e) {
-          notifyClients({ level: 'warn', msg: 'Music cache failed', url: m });
         }
       }
     }
@@ -357,7 +341,7 @@ async function cacheRestAssets() {
       try {
         // Slight stagger to avoid network burst for images/videos
         await new Promise(r => setTimeout(r, 150));
-        try { await bgCache.add(asset); } catch (e) { /* ignore individual failures */ }
+        await cacheWithRetry(bgCache, asset, 1); // Single retry for images
       } catch (e) {
         // ignore individual failures
       }
