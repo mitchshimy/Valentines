@@ -119,6 +119,9 @@
     let pendingSeekTime = null; // used to seek once metadata loads
     let audioListenersAttached = false;
     let lastSentPreferredMusicUrl = null; // dedupe SW messages
+    
+    // Track active fetch operations so we can cancel them when user selects a track
+    const activeFetches = new Set(); // Set of AbortController instances
 
     let lastTimeUpdate = 0;
 
@@ -826,8 +829,19 @@ function showQuoteInScreen() {
       } catch (e) {}
     }
 
+    // Cancel all active background fetch operations
+    function cancelAllActiveFetches() {
+      activeFetches.forEach(controller => {
+        try {
+          controller.abort();
+        } catch (e) {}
+      });
+      activeFetches.clear();
+    }
+
     // Proactively warm up the music cache by fetching all tracks once.
     // This relies on the service worker's music-first strategy to cache responses.
+    // Can be cancelled if user selects a track.
     function warmUpMusicCache() {
       try {
         if (!('serviceWorker' in navigator)) return;
@@ -848,20 +862,42 @@ function showQuoteInScreen() {
         } catch (e) {}
 
         let index = 0;
+        let cancelled = false;
+        
         function worker() {
-          if (index >= urls.length) return;
+          if (cancelled || index >= urls.length) return;
           const url = urls[index++];
-          // Fire-and-forget: fetching will cause the SW to cache the response
-          fetch(url).catch(() => {}).finally(() => {
-            worker();
-          });
+          
+          // Create AbortController for this fetch so we can cancel it
+          const controller = new AbortController();
+          activeFetches.add(controller);
+          
+          // Fetch with abort signal - will be cancelled if user selects a track
+          fetch(url, { signal: controller.signal })
+            .catch(() => {}) // Ignore abort errors
+            .finally(() => {
+              activeFetches.delete(controller);
+              if (!cancelled) {
+                worker();
+              }
+            });
         }
 
         for (let i = 0; i < concurrency && i < urls.length; i++) {
           worker();
         }
-      } catch (e) {}
+        
+        // Return cancellation function
+        return () => {
+          cancelled = true;
+          cancelAllActiveFetches();
+        };
+      } catch (e) {
+        return () => {}; // Return no-op function if error
+      }
     }
+    
+    let warmUpCanceller = null;
 
     // Generate complete asset list from music library for service worker caching
     // This is player-specific knowledge - SW shouldn't know what assets exist
@@ -915,6 +951,7 @@ function showQuoteInScreen() {
 
     // Prefetch upcoming tracks in the playlist to ensure smooth playback
     // This is called when a track starts playing to prefetch the next few tracks
+    // Can be cancelled if user selects a different track
     function prefetchUpcomingTracks(currentTrackId, count = 3) {
       try {
         if (!('serviceWorker' in navigator)) return;
@@ -937,10 +974,39 @@ function showQuoteInScreen() {
           }
         }
 
-        // Prefetch in parallel (fire-and-forget)
+        // Prefetch in parallel with abort controllers
         urlsToPrefetch.forEach(url => {
-          fetch(url).catch(() => {});
+          const controller = new AbortController();
+          activeFetches.add(controller);
+          fetch(url, { signal: controller.signal })
+            .catch(() => {}) // Ignore abort errors
+            .finally(() => {
+              activeFetches.delete(controller);
+            });
         });
+      } catch (e) {}
+    }
+    
+    // User selection is source of truth - cancel background caching and prioritize selected track
+    function prioritizeUserSelection(trackUrl) {
+      try {
+        if (!('serviceWorker' in navigator)) return;
+        if (!trackUrl) return;
+        
+        // Cancel all background fetches to free bandwidth for user selection
+        cancelAllActiveFetches();
+        if (warmUpCanceller) {
+          warmUpCanceller();
+          warmUpCanceller = null;
+        }
+        
+        // Notify service worker to prioritize this track
+        sendPreferredMusicToSW(trackUrl);
+        
+        // Note: We don't need to explicitly fetch the current track here because:
+        // 1. When audioPlayer.src is set, it will fetch through service worker
+        // 2. Service worker's musicFirst() function will cache it automatically
+        // 3. This avoids redundant bandwidth usage (audio element + explicit fetch)
       } catch (e) {}
     }
 
@@ -1129,10 +1195,14 @@ function showQuoteInScreen() {
         if (pendingSeekTime == null) {
           pendingSeekTime = currentTime;
         }
+        // HTML5 audio naturally supports bit streaming - it will buffer as it plays
+        // No need to set preload to "auto" (which downloads entire file)
+        // "metadata" is fine - playback starts once enough buffer is available
         audioPlayer.load();
       }
 
-      // Play the track - ensure it works even if not cached (network fallback)
+      // Play the track immediately - HTML5 audio supports bit streaming
+      // It will start playing as soon as enough buffer is available (usually ~3-5 seconds)
       audioPlayer.play().catch((err) => {
         // If play fails, try again after a short delay (might be loading)
         setTimeout(() => {
@@ -1144,7 +1214,12 @@ function showQuoteInScreen() {
       cacheNextIfCurrentNotCached(currentTrackId);
 
       // Prefetch upcoming tracks for smooth playback when user skips ahead
-      prefetchUpcomingTracks(currentTrackId, 3);
+      // Only prefetch if track is already cached (don't compete with current track)
+      isTrackCached(currentTrackId).then(cached => {
+        if (cached) {
+          prefetchUpcomingTracks(currentTrackId, 3);
+        }
+      });
     }
 
 
@@ -1168,13 +1243,12 @@ function showQuoteInScreen() {
         }
       }
 
+      // USER SELECTION IS SOURCE OF TRUTH - cancel all background caching
+      // and prioritize the selected track (audio element will cache it via service worker)
+      prioritizeUserSelection(trackId);
+
       // Notify service worker about the current track so it can prioritize caching
       sendPreferredMusicToSW(trackId);
-
-      // Immediately prefetch this track and upcoming tracks to ensure smooth playback
-      // This handles the edge case where user spams next button or selects random song
-      fetch(trackId).catch(() => {}); // Prefetch current track
-      prefetchUpcomingTracks(trackId, 3); // Prefetch next 3 tracks
 
       updateSongDisplay();
       updateQuoteFromSong();
@@ -1614,6 +1688,14 @@ function updateQuoteFromSong() {
     document.addEventListener('DOMContentLoaded', function() {
       // Get audio player
       audioPlayer = document.getElementById('audioPlayer');
+      
+      // Configure audio for bit streaming - HTML5 audio naturally supports streaming playback
+      // It will start playing once enough buffer is available (~3-5 seconds), not waiting for full download
+      if (audioPlayer) {
+        // preload="metadata" is fine - HTML5 audio will buffer as it plays (bit streaming)
+        // Setting to "auto" would try to download entire file, which isn't necessary
+      }
+      
       ensureScreenElements()
 
         // Load saved player state
@@ -1807,7 +1889,10 @@ function updateQuoteFromSong() {
       // Start cache warming immediately (don't wait) to handle fast user interactions
       // This ensures tracks are cached even if user spams next button or selects random song
       // Run in next tick to not block initialization
-      setTimeout(warmUpMusicCache, 100);
+      // Store canceller so we can stop it if user selects a track
+      setTimeout(() => {
+        warmUpCanceller = warmUpMusicCache();
+      }, 100);
 
       // When the SW controller changes (new SW), resend preferred
       navigator.serviceWorker.addEventListener('controllerchange', () => {
