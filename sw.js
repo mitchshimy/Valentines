@@ -283,6 +283,7 @@ async function cacheWithRetry(cache, url, maxRetries = 2) {
 }
 
 // Cache assets provided by the player - SW doesn't know what assets exist
+// PRIORITY: Images first (smaller, faster), then music in provided order
 async function cacheRestAssets(assets) {
   // Validate input - player must provide asset list
   if (!Array.isArray(assets) || assets.length === 0) {
@@ -293,58 +294,78 @@ async function cacheRestAssets(assets) {
   try {
     const bgCache = await caches.open(BG_CACHE);
     const musicCache = await caches.open(MUSIC_CACHE);
-    // Immediately prefetch preferred music and a small priority music set
+    
+    // Separate images and music - images are smaller and should be cached first
+    const imageAssets = assets.filter(a => !a.startsWith('assets/music/'));
     const musicAssets = assets.filter(a => a.startsWith('assets/music/'));
-    const priority = [];
-    if (preferredMusicUrl) {
-      // normalize stored URL to relative path if possible
-      try {
-        const u = new URL(preferredMusicUrl, self.location.origin);
-        priority.push(u.pathname.replace(/^[\/]/, ''));
-      } catch (e) {
-        if (preferredMusicUrl) priority.push(preferredMusicUrl);
-      }
-    }
-    for (let i = 0; i < Math.min(2, musicAssets.length); i++) priority.push(musicAssets[i]);
-
-    const dedupPriority = Array.from(new Set(priority)).filter(Boolean);
-
-    // Prefetch priority music without stagger (in parallel) with retry
-    await Promise.all(dedupPriority.map(async m => {
-      const cached = await cacheWithRetry(musicCache, m, 2);
-      if (cached) {
-        notifyClients({ level: 'info', msg: 'Prefetched priority music', url: m });
-      }
-    }));
-
-    // For the remaining music assets, use adaptive concurrency for mobile
-    // Lower concurrency on mobile helps avoid overwhelming the network
-    const remainingMusic = musicAssets.filter(a => !dedupPriority.includes(a));
-    // Use lower concurrency (2) to be more mobile-friendly
-    const concurrency = 2;
-    let idx = 0;
-    async function worker() {
-      while (idx < remainingMusic.length) {
-        const i = idx++;
-        const m = remainingMusic[i];
-        const cached = await cacheWithRetry(musicCache, m, 2);
-        if (cached) {
-          notifyClients({ level: 'info', msg: 'Cached music', url: m });
+    
+    // STEP 1: Cache images first (smaller files, faster to complete)
+    // Use higher concurrency for images since they're smaller
+    const imageConcurrency = 4;
+    let imageIdx = 0;
+    async function imageWorker() {
+      while (imageIdx < imageAssets.length) {
+        const i = imageIdx++;
+        const img = imageAssets[i];
+        try {
+          await cacheWithRetry(bgCache, img, 1); // Single retry for images
+          notifyClients({ level: 'info', msg: 'Cached image', url: img });
+        } catch (e) {
+          // ignore individual failures
         }
       }
     }
-    await Promise.all(new Array(Math.min(concurrency, remainingMusic.length)).fill(0).map(() => worker()));
-
-    // Then continue with background caching (staggered) for non-music assets
-    for (const asset of assets) {
-      if (asset.startsWith('assets/music/')) continue; // already handled
-      try {
-        // Slight stagger to avoid network burst for images/videos
-        await new Promise(r => setTimeout(r, 150));
-        await cacheWithRetry(bgCache, asset, 1); // Single retry for images
-      } catch (e) {
-        // ignore individual failures
+    // Cache images in parallel with higher concurrency
+    await Promise.all(new Array(Math.min(imageConcurrency, imageAssets.length)).fill(0).map(() => imageWorker()));
+    
+    // STEP 2: Cache music in the order provided (saved playlist order or default)
+    // Music files are larger, so we use lower concurrency to avoid overwhelming network
+    if (musicAssets.length > 0) {
+      // Check for preferred music (user's current track) and prioritize it
+      const priority = [];
+      if (preferredMusicUrl) {
+        try {
+          const u = new URL(preferredMusicUrl, self.location.origin);
+          const preferredPath = u.pathname.replace(/^[\/]/, '');
+          if (musicAssets.includes(preferredPath)) {
+            priority.push(preferredPath);
+          }
+        } catch (e) {
+          if (preferredMusicUrl && musicAssets.includes(preferredMusicUrl)) {
+            priority.push(preferredMusicUrl);
+          }
+        }
       }
+      
+      // Cache priority music first (if exists)
+      if (priority.length > 0) {
+        await Promise.all(priority.map(async m => {
+          const cached = await cacheWithRetry(musicCache, m, 2);
+          if (cached) {
+            notifyClients({ level: 'info', msg: 'Prefetched priority music', url: m });
+          }
+        }));
+      }
+      
+      // Cache remaining music in provided order (saved playlist order or default)
+      const remainingMusic = musicAssets.filter(a => !priority.includes(a));
+      const musicConcurrency = 2; // Lower concurrency for larger files
+      let musicIdx = 0;
+      async function musicWorker() {
+        while (musicIdx < remainingMusic.length) {
+          const i = musicIdx++;
+          const m = remainingMusic[i];
+          try {
+            const cached = await cacheWithRetry(musicCache, m, 2);
+            if (cached) {
+              notifyClients({ level: 'info', msg: 'Cached music', url: m });
+            }
+          } catch (e) {
+            // ignore individual failures
+          }
+        }
+      }
+      await Promise.all(new Array(Math.min(musicConcurrency, remainingMusic.length)).fill(0).map(() => musicWorker()));
     }
 
     // Notify clients that background caching is complete

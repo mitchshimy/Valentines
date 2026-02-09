@@ -121,26 +121,67 @@ function startLetterTypingAnimation() {
     if (isTyping || letterTypingComplete) return;
     isTyping = true;
 
-    // Tell the service worker to start background caching while the letter types
-    // Send complete asset list so caching starts immediately during typing animation
-    // This is perfect timing - user waits for typing, assets cache in background
+    // Get saved playlist order from localStorage (if exists)
+    // This ensures we cache music in the user's preferred order
+    let musicOrder = [];
+    try {
+      const savedState = localStorage.getItem('musicPlayerState');
+      if (savedState) {
+        const state = JSON.parse(savedState);
+        if (state.displayOrder && Array.isArray(state.displayOrder)) {
+          // displayOrder maps display index -> originalLibrary index
+          // We need to get the audioUrl for each track in displayOrder
+          const musicLibrary = [
+            { audioUrl: "assets/music/chikwere.mp3" },
+            { audioUrl: "assets/music/noonelikeyou.mp3" },
+            { audioUrl: "assets/music/itsyou.mp3" },
+            { audioUrl: "assets/music/happyyouremine.mp3" },
+            { audioUrl: "assets/music/residuals.mp3" },
+            { audioUrl: "assets/music/feelmylove.mp3" },
+            { audioUrl: "assets/music/littlethings.mp3" },
+            { audioUrl: "assets/music/feelthelove.mp3" },
+            { audioUrl: "assets/music/najuta.mp3" }
+          ];
+          
+          // Validate displayOrder length matches library
+          if (state.displayOrder.length === musicLibrary.length) {
+            // Map displayOrder indices to audioUrls
+            musicOrder = state.displayOrder.map(origIdx => {
+              if (origIdx >= 0 && origIdx < musicLibrary.length) {
+                return musicLibrary[origIdx].audioUrl;
+              }
+              return null;
+            }).filter(Boolean);
+          }
+        }
+      }
+    } catch (e) {
+      // If parsing fails, fall back to default order
+    }
+    
+    // If no saved order or parsing failed, use default order
+    if (musicOrder.length === 0) {
+      musicOrder = [
+        'assets/music/chikwere.mp3',
+        'assets/music/noonelikeyou.mp3',
+        'assets/music/itsyou.mp3',
+        'assets/music/happyyouremine.mp3',
+        'assets/music/residuals.mp3',
+        'assets/music/feelmylove.mp3',
+        'assets/music/littlethings.mp3',
+        'assets/music/feelthelove.mp3',
+        'assets/music/najuta.mp3'
+      ];
+    }
+
+    // PRIORITIZE IMAGES FIRST (smaller, faster to cache)
+    // Then music in saved playlist order (or default order)
     const allAssets = [
-      // Images used by letter page
+      // Images used by letter page (cache first - smallest files)
       'assets/images/kakashi.png',
       'assets/images/landscape.jpg',
       
-      // All music files - cache these during typing so player loads instantly
-      'assets/music/chikwere.mp3',
-      'assets/music/noonelikeyou.mp3',
-      'assets/music/itsyou.mp3',
-      'assets/music/happyyouremine.mp3',
-      'assets/music/feelmylove.mp3',
-      'assets/music/littlethings.mp3',
-      'assets/music/feelthelove.mp3',
-      'assets/music/residuals.mp3',
-      'assets/music/najuta.mp3',
-      
-      // All images used by player
+      // All images used by player (cache before music)
       'assets/images/1.jpg',
       'assets/images/2.jpg',
       'assets/images/3.jpg',
@@ -153,8 +194,13 @@ function startLetterTypingAnimation() {
       'assets/images/16400503_v722-aum-36b.jpg',
       'assets/images/2151930103.jpg',
       'assets/images/background-dark.mp4',
-      'assets/images/background.png'
+      'assets/images/background.png',
+      
+      // Music files in saved playlist order (or default order)
+      // These are larger, so cache after images
+      ...musicOrder
     ];
+    
     sendMessageToSW({ type: 'cache-rest', assets: allAssets });
 
     const paragraphs = document.querySelectorAll('.letter-content p');
