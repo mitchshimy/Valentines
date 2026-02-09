@@ -2,8 +2,6 @@ let currentTypingTimeout = null;
 let isTyping = false;
 let letterTypingComplete = false;
 
-
-
 // Helper to communicate with the service worker
 function sendMessageToSW(message) {
     if (!('serviceWorker' in navigator)) return;
@@ -11,43 +9,13 @@ function sendMessageToSW(message) {
         if (navigator.serviceWorker.controller) {
             navigator.serviceWorker.controller.postMessage(message);
         } else {
-            navigator.serviceWorker.ready
-                .then(reg => reg.active && reg.active.postMessage(message))
-                .catch(() => {});
+            navigator.serviceWorker.ready.then(reg => {
+                if (reg.active) reg.active.postMessage(message);
+            }).catch(() => {});
         }
-    } catch (_) {}
-}
-
-function prefetchPlayerAssets() {
-    // All assets for the player
-    const assets = [
-        // Music (highest priority)
-        'assets/music/chikwere.mp3',
-        'assets/music/noonelikeyou.mp3',
-        'assets/music/itsyou.mp3',
-        'assets/music/happyyouremine.mp3',
-        'assets/music/feelmylove.mp3',
-        'assets/music/littlethings.mp3',
-        'assets/music/feelthelove.mp3',
-        'assets/music/residuals.mp3',
-        'assets/music/najuta.mp3',
-
-        // Player visuals (images/videos)
-        'assets/images/1.jpg',
-        'assets/images/2.jpg',
-        'assets/images/3.jpg',
-        'assets/images/4.jpg',
-        'assets/images/5.jpg',
-        'assets/images/6.jpg',
-        'assets/images/7.jpg',
-        'assets/images/8.jpg',
-        'assets/images/9.jpg',
-        'assets/images/background.png',
-        'assets/images/background-dark.mp4'
-    ];
-
-    // Send all assets to service worker for prioritized caching
-    sendMessageToSW({ type: 'prefetch', assets });
+    } catch (e) {
+        // ignore
+    }
 }
 
 // --- UTILITY FUNCTIONS ---
@@ -154,7 +122,7 @@ function startLetterTypingAnimation() {
     isTyping = true;
 
     // Tell the service worker to start background caching while the letter types
-    prefetchPlayerAssets();
+    sendMessageToSW({ type: 'cache-rest' });
 
     const paragraphs = document.querySelectorAll('.letter-content p');
     if (!paragraphs.length) return;
