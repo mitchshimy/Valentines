@@ -113,6 +113,44 @@ body[data-theme="dark"] {
       100% { transform: translateY(0) rotate(0deg) scale(1); opacity: 1; }
     }
 
+    @keyframes cardShuffle {
+      0% { 
+        transform: translate(0, 0) rotate(0deg) scale(1);
+        z-index: var(--shuffle-z-start, 8);
+        opacity: 1;
+      }
+      25% {
+        /* Cards sweep sideways in a circular arc (vortex, mostly horizontal) */
+        transform: translate(calc(var(--vortex-x, 0) * 0.6px), 0)
+                   rotate(calc(var(--vortex-rot, 0) * 0.6deg))
+                   scale(1.05);
+        z-index: var(--shuffle-z-mid, 20);
+        opacity: 0.95;
+      }
+      50% {
+        /* Peak of sideways vortex - cards at maximum horizontal spread */
+        transform: translate(calc(var(--vortex-x, 0) * 1px), 0)
+                   rotate(calc(var(--vortex-rot, 0) * 1deg))
+                   scale(1.08);
+        z-index: var(--shuffle-z-mid, 25);
+        opacity: 0.9;
+      }
+      75% {
+        /* Cards start coming back around */
+        transform: translate(calc(var(--vortex-x, 0) * 0.5px), 0)
+                   rotate(calc(var(--vortex-rot, 0) * 0.5deg))
+                   scale(1.03);
+        z-index: var(--shuffle-z-mid, 18);
+        opacity: 0.97;
+      }
+      100% { 
+        /* Cards settle into new positions */
+        transform: translate(0, 0) rotate(0deg) scale(1);
+        z-index: var(--shuffle-z-end, 8);
+        opacity: 1;
+      }
+    }
+
     @keyframes slideIn {
       from { opacity: 0; transform: translateY(20px); }
       to { opacity: 1; transform: translateY(0); }
@@ -236,7 +274,7 @@ body[data-theme="dark"] {
       z-index: 1;
     }
 
-    .greeting-container {\
+    .greeting-container {
       position: relative;
       width: 100%;
       padding: 25px 20px 15px;
@@ -951,11 +989,18 @@ body[data-theme="dark"] .screen::before {
     0 10px 25px rgba(0, 0, 0, 0.3),
     inset 0 0 0 1px rgba(255, 255, 255, 0.3);
   transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-  transform-origin: center bottom;
-  overflow: hidden;
-  cursor: pointer;
-  z-index: 1;
-  margin-top: 60px;
+}
+
+.music-card.shuffling {
+  animation: cardShuffle 1s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
+  transition: none !important;
+  pointer-events: none; /* Prevent clicks during animation */
+  will-change: transform, z-index, opacity;
+  transform-origin: center center;
+}
+
+.music-card.shuffling.playing {
+  z-index: 30 !important; /* Keep playing card on top during shuffle */
 }
 
 /* Card corners for light theme (black background) */
@@ -1675,10 +1720,24 @@ body[data-theme="dark"] .screen::before {
         text-align: center;
       }
       
+      /* Purple heart cursor in quote text with blinking animation */
+      .ipod-quote-text .cursor {
+        color: #9370DB !important;
+        animation: cursorBlink 1s infinite;
+        display: inline-block;
+      }
+      
       .ipod-quote-author {
          font-family: var(--font-serif);
         font-size: clamp(1.1rem, 4vw, 1.4rem) !important;
         text-align: center;
+        color: #9370DB !important;
+      }
+      
+      /* Purple heart in author (no blinking) */
+      .ipod-quote-author .cursor {
+        color: #9370DB !important;
+        display: inline-block;
       }
       
       /* CLICK WHEEL - Touch friendly */

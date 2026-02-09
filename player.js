@@ -135,6 +135,8 @@
       audioPlayer.addEventListener('play', () => {
         isPlaying = true;
         updatePlayPauseIcon();
+        // When playback starts, check if current track is cached and cache next if not
+        cacheNextIfCurrentNotCached(currentTrackId);
       });
 
       audioPlayer.addEventListener('pause', () => {
@@ -824,6 +826,48 @@ function showQuoteInScreen() {
       } catch (e) {}
     }
 
+    // Check if music files are cached and cache missing ones immediately
+    async function verifyAndCacheMusic() {
+      try {
+        if (!('serviceWorker' in navigator) || !('caches' in window)) return;
+        if (!originalLibrary || !originalLibrary.length) return;
+
+        const musicCache = await caches.open('music-v1');
+        const urls = originalLibrary
+          .map(track => track && track.audioUrl)
+          .filter(Boolean);
+        if (!urls.length) return;
+
+        // Check each URL and cache if missing
+        const uncached = [];
+        for (const url of urls) {
+          const cached = await musicCache.match(url);
+          if (!cached) {
+            uncached.push(url);
+          }
+        }
+
+        // If any music files are missing, cache them immediately with higher priority
+        if (uncached.length > 0) {
+          // Use higher concurrency to cache faster
+          const concurrency = 4;
+          let idx = 0;
+          function worker() {
+            if (idx >= uncached.length) return;
+            const url = uncached[idx++];
+            // Fetch immediately - service worker will cache it
+            fetch(url).catch(() => {}).finally(() => {
+              worker();
+            });
+          }
+
+          for (let i = 0; i < concurrency && i < uncached.length; i++) {
+            worker();
+          }
+        }
+      } catch (e) {}
+    }
+
     // Proactively warm up the music cache by fetching all tracks once.
     // This relies on the service worker's music-first strategy to cache responses.
     function warmUpMusicCache() {
@@ -899,6 +943,18 @@ function showQuoteInScreen() {
       return Array.from(new Set(assets));
     }
 
+    // Check if a track is cached in the service worker cache
+    async function isTrackCached(trackUrl) {
+      try {
+        if (!('serviceWorker' in navigator) || !('caches' in window)) return false;
+        const cache = await caches.open('music-v1');
+        const cached = await cache.match(trackUrl);
+        return !!cached;
+      } catch (e) {
+        return false;
+      }
+    }
+
     // Prefetch upcoming tracks in the playlist to ensure smooth playback
     // This is called when a track starts playing to prefetch the next few tracks
     function prefetchUpcomingTracks(currentTrackId, count = 3) {
@@ -928,6 +984,31 @@ function showQuoteInScreen() {
           fetch(url).catch(() => {});
         });
       } catch (e) {}
+    }
+
+    // If current track is not cached (playing from network), immediately cache the next track
+    async function cacheNextIfCurrentNotCached(currentTrackId) {
+      try {
+        if (!currentTrackId) return;
+        
+        // Check if current track is cached
+        const isCached = await isTrackCached(currentTrackId);
+        
+        // If not cached, immediately fetch the next track so it's ready
+        if (!isCached) {
+          const currentDisplayIdx = findDisplayIndexByTrackId(currentTrackId);
+          if (currentDisplayIdx !== -1) {
+            const nextDisplayIdx = (currentDisplayIdx + 1) % displayOrder.length;
+            const nextTrack = getTrackByDisplayIndex(nextDisplayIdx);
+            if (nextTrack && nextTrack.audioUrl) {
+              // Immediately fetch next track - service worker will cache it
+              fetch(nextTrack.audioUrl).catch(() => {});
+            }
+          }
+        }
+      } catch (e) {
+        // Ignore errors - this is best-effort prefetching
+      }
     }
 
     // ====== AUDIO FUNCTIONS ======
@@ -1101,6 +1182,9 @@ function showQuoteInScreen() {
         }, 100);
       });
 
+      // If current track is not cached (playing from network), immediately cache the next track
+      cacheNextIfCurrentNotCached(currentTrackId);
+
       // Prefetch upcoming tracks for smooth playback when user skips ahead
       prefetchUpcomingTracks(currentTrackId, 3);
     }
@@ -1180,7 +1264,48 @@ function showQuoteInScreen() {
       // IMPORTANT: Shuffle must be silent: no audio reload, no play/pause toggles,
       // and MUST NOT re-trigger quote typing unless the track actually changes.
       const currentlyPlayingId = currentTrackId;
+      const cardDeck = document.getElementById('cardDeck');
+      if (!cardDeck || !cards || cards.length === 0) return;
 
+      // Add shuffle animation class to all cards with vortex effect
+      // Cards spiral up in a vortex pattern, rotating around center
+      cards.forEach((card, index) => {
+        card.classList.add('shuffling');
+        
+        // Create vortex pattern - cards spiral outward in circular motion
+        // Each card gets a different angle based on its position
+        const totalCards = cards.length;
+        const angleStep = (Math.PI * 2) / totalCards; // Full circle divided by cards
+        const baseAngle = index * angleStep;
+        
+        // Add some randomness to make it more organic
+        const randomOffset = (Math.random() - 0.5) * 0.5;
+        const vortexAngle = baseAngle + randomOffset;
+        
+        // Vortex radius increases with index (spiral outward)
+        const vortexRadius = 80 + (index / totalCards) * 60;
+        
+        // Calculate vortex position (circular motion)
+        const vortexX = Math.cos(vortexAngle) * vortexRadius;
+        const vortexY = -Math.sin(vortexAngle) * vortexRadius * 0.3; // Less vertical spread
+        
+        // Rotation follows the vortex angle
+        const vortexRot = (vortexAngle * 180 / Math.PI) + (Math.random() - 0.5) * 20;
+        
+        // Z-index varies during shuffle for depth
+        const zStart = 8 - index;
+        const zMid = 20 + Math.floor(Math.random() * 8);
+        const zEnd = 8 - index;
+        
+        card.style.setProperty('--vortex-x', vortexX);
+        card.style.setProperty('--vortex-y', vortexY);
+        card.style.setProperty('--vortex-rot', vortexRot);
+        card.style.setProperty('--shuffle-z-start', zStart);
+        card.style.setProperty('--shuffle-z-mid', zMid);
+        card.style.setProperty('--shuffle-z-end', zEnd);
+      });
+
+      // Shuffle the order
       const newOrder = displayOrder.slice();
       for (let i = newOrder.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
@@ -1195,9 +1320,24 @@ function showQuoteInScreen() {
         currentSongIndex = newDisplayIdx !== -1 ? newDisplayIdx : 0;
       }
 
-      // Refresh UI-only pieces.
-      updateCardDeck();
-      if (isPlaylistOpen) renderPlaylist();
+      // After animation completes, update the deck and remove animation class
+      setTimeout(() => {
+        // Recreate cards in new order
+        updateCardDeck();
+        
+        // Remove shuffle animation class and reset custom properties
+        cards.forEach(card => {
+          card.classList.remove('shuffling');
+          card.style.removeProperty('--vortex-x');
+          card.style.removeProperty('--vortex-y');
+          card.style.removeProperty('--vortex-rot');
+          card.style.removeProperty('--shuffle-z-start');
+          card.style.removeProperty('--shuffle-z-mid');
+          card.style.removeProperty('--shuffle-z-end');
+        });
+        
+        if (isPlaylistOpen) renderPlaylist();
+      }, 1000); // Match animation duration (1s)
 
       const shuffleBtn = document.getElementById('shuffleBtn');
       if (shuffleBtn) {
@@ -1552,6 +1692,10 @@ function updateQuoteFromSong() {
 
   // Always preload durations so playlist shows real lengths without waiting for playback.
   preloadAudioDurations();
+
+  // On mobile, verify music files are cached and cache missing ones immediately
+  // This is critical because service worker might be throttled on mobile
+  verifyAndCacheMusic();
 
   setupAutoSave();
 

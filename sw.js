@@ -214,6 +214,7 @@ self.addEventListener('message', event => {
   if (!event.data) return;
   
   // Cache assets - player sends the list of assets to cache
+  // Run immediately and don't block - critical for mobile
   if (event.data.type === 'cache-rest' && Array.isArray(event.data.assets)) {
     cacheRestAssets(event.data.assets);
     return;
@@ -290,67 +291,77 @@ async function cacheRestAssets(assets) {
     return;
   }
 
-  try {
-    const bgCache = await caches.open(BG_CACHE);
-    const musicCache = await caches.open(MUSIC_CACHE);
-    // Immediately prefetch preferred music and a small priority music set
-    const musicAssets = assets.filter(a => a.startsWith('assets/music/'));
-    const priority = [];
-    if (preferredMusicUrl) {
-      // normalize stored URL to relative path if possible
-      try {
-        const u = new URL(preferredMusicUrl, self.location.origin);
-        priority.push(u.pathname.replace(/^[\/]/, ''));
-      } catch (e) {
-        if (preferredMusicUrl) priority.push(preferredMusicUrl);
-      }
-    }
-    for (let i = 0; i < Math.min(2, musicAssets.length); i++) priority.push(musicAssets[i]);
-
-    const dedupPriority = Array.from(new Set(priority)).filter(Boolean);
-
-    // Prefetch priority music without stagger (in parallel) with retry
-    await Promise.all(dedupPriority.map(async m => {
-      const cached = await cacheWithRetry(musicCache, m, 2);
-      if (cached) {
-        notifyClients({ level: 'info', msg: 'Prefetched priority music', url: m });
-      }
-    }));
-
-    // For the remaining music assets, use adaptive concurrency for mobile
-    // Lower concurrency on mobile helps avoid overwhelming the network
-    const remainingMusic = musicAssets.filter(a => !dedupPriority.includes(a));
-    // Use lower concurrency (2) to be more mobile-friendly
-    const concurrency = 2;
-    let idx = 0;
-    async function worker() {
-      while (idx < remainingMusic.length) {
-        const i = idx++;
-        const m = remainingMusic[i];
-        const cached = await cacheWithRetry(musicCache, m, 2);
-        if (cached) {
-          notifyClients({ level: 'info', msg: 'Cached music', url: m });
+  // Run caching in background - don't block, especially important on mobile
+  (async () => {
+    try {
+      const bgCache = await caches.open(BG_CACHE);
+      const musicCache = await caches.open(MUSIC_CACHE);
+      // Immediately prefetch preferred music and a small priority music set
+      const musicAssets = assets.filter(a => a.startsWith('assets/music/'));
+      const priority = [];
+      if (preferredMusicUrl) {
+        // normalize stored URL to relative path if possible
+        try {
+          const u = new URL(preferredMusicUrl, self.location.origin);
+          priority.push(u.pathname.replace(/^[\/]/, ''));
+        } catch (e) {
+          if (preferredMusicUrl) priority.push(preferredMusicUrl);
         }
       }
-    }
-    await Promise.all(new Array(Math.min(concurrency, remainingMusic.length)).fill(0).map(() => worker()));
+      for (let i = 0; i < Math.min(2, musicAssets.length); i++) priority.push(musicAssets[i]);
 
-    // Then continue with background caching (staggered) for non-music assets
-    for (const asset of assets) {
-      if (asset.startsWith('assets/music/')) continue; // already handled
-      try {
-        // Slight stagger to avoid network burst for images/videos
-        await new Promise(r => setTimeout(r, 150));
-        await cacheWithRetry(bgCache, asset, 1); // Single retry for images
-      } catch (e) {
-        // ignore individual failures
+      const dedupPriority = Array.from(new Set(priority)).filter(Boolean);
+
+      // Prefetch priority music without stagger (in parallel) with retry
+      // Do this immediately and don't wait - music is critical
+      Promise.all(dedupPriority.map(async m => {
+        const cached = await cacheWithRetry(musicCache, m, 2);
+        if (cached) {
+          notifyClients({ level: 'info', msg: 'Prefetched priority music', url: m });
+        }
+      })).catch(() => {}); // Don't block on priority music
+
+      // For the remaining music assets, use higher concurrency to cache faster
+      // Music files are critical - cache them aggressively even on mobile
+      const remainingMusic = musicAssets.filter(a => !dedupPriority.includes(a));
+      // Use higher concurrency (5) to cache music faster - music files are the priority
+      const concurrency = 5;
+      let idx = 0;
+      async function worker() {
+        while (idx < remainingMusic.length) {
+          const i = idx++;
+          const m = remainingMusic[i];
+          const cached = await cacheWithRetry(musicCache, m, 2);
+          if (cached) {
+            notifyClients({ level: 'info', msg: 'Cached music', url: m });
+          }
+        }
       }
-    }
+      // Don't await - let it run in background
+      Promise.all(new Array(Math.min(concurrency, remainingMusic.length)).fill(0).map(() => worker())).catch(() => {});
 
-    // Notify clients that background caching is complete
-    const allClients = await self.clients.matchAll();
-    allClients.forEach(c => c.postMessage({ type: 'bg-cache-complete' }));
-  } catch (e) {
-    // swallow errors
-  }
+      // Then continue with background caching (staggered) for non-music assets
+      // Also non-blocking
+      (async () => {
+        for (const asset of assets) {
+          if (asset.startsWith('assets/music/')) continue; // already handled
+          try {
+            // Slight stagger to avoid network burst for images/videos
+            await new Promise(r => setTimeout(r, 100));
+            await cacheWithRetry(bgCache, asset, 1); // Single retry for images
+          } catch (e) {
+            // ignore individual failures
+          }
+        }
+
+        // Notify clients that background caching is complete
+        try {
+          const allClients = await self.clients.matchAll();
+          allClients.forEach(c => c.postMessage({ type: 'bg-cache-complete' }));
+        } catch (e) {}
+      })().catch(() => {});
+    } catch (e) {
+      // swallow errors
+    }
+  })().catch(() => {});
 }
