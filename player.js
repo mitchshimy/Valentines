@@ -826,48 +826,6 @@ function showQuoteInScreen() {
       } catch (e) {}
     }
 
-    // Check if music files are cached and cache missing ones immediately
-    async function verifyAndCacheMusic() {
-      try {
-        if (!('serviceWorker' in navigator) || !('caches' in window)) return;
-        if (!originalLibrary || !originalLibrary.length) return;
-
-        const musicCache = await caches.open('music-v1');
-        const urls = originalLibrary
-          .map(track => track && track.audioUrl)
-          .filter(Boolean);
-        if (!urls.length) return;
-
-        // Check each URL and cache if missing
-        const uncached = [];
-        for (const url of urls) {
-          const cached = await musicCache.match(url);
-          if (!cached) {
-            uncached.push(url);
-          }
-        }
-
-        // If any music files are missing, cache them immediately with higher priority
-        if (uncached.length > 0) {
-          // Use higher concurrency to cache faster
-          const concurrency = 4;
-          let idx = 0;
-          function worker() {
-            if (idx >= uncached.length) return;
-            const url = uncached[idx++];
-            // Fetch immediately - service worker will cache it
-            fetch(url).catch(() => {}).finally(() => {
-              worker();
-            });
-          }
-
-          for (let i = 0; i < concurrency && i < uncached.length; i++) {
-            worker();
-          }
-        }
-      } catch (e) {}
-    }
-
     // Proactively warm up the music cache by fetching all tracks once.
     // This relies on the service worker's music-first strategy to cache responses.
     function warmUpMusicCache() {
@@ -1692,10 +1650,6 @@ function updateQuoteFromSong() {
 
   // Always preload durations so playlist shows real lengths without waiting for playback.
   preloadAudioDurations();
-
-  // On mobile, verify music files are cached and cache missing ones immediately
-  // This is critical because service worker might be throttled on mobile
-  verifyAndCacheMusic();
 
   setupAutoSave();
 
