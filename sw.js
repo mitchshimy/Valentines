@@ -82,8 +82,6 @@ const PRECACHE_URLS = [
   'letter-styles.css',
   'letter.js',
   'player.js',
-  // Critical assets - load really first
-  'assets/images/landscape.avif'
 
 ];
 

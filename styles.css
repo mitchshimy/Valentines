@@ -19,7 +19,7 @@
       --font-serif: 'Playfair Display', serif;
       
       /* Light theme (default) */
-      --bg-base: url(assets/images/16400503_v722-aum-36b.avif);
+      --bg-base: url(assets/images/16400503_v722-aum-36b.jpg);
       --bg-secondary: #f5f5f5;
       --text-main: #000000;
       --text-muted: #666666;
@@ -857,7 +857,7 @@ body[data-theme="dark"] .screen::before {
 
 /* Also adjust the quote container to be more flexible */
 .quote-container {
-  background: url(assets/images/background.avif);
+  background: url(assets/images/background.jpg);
   border-radius: 12px;
   padding: 25px 20px;
   border: 1px solid rgba(255, 255, 255, 0.15);

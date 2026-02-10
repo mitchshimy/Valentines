@@ -192,22 +192,22 @@ function startLetterTypingAnimation() {
     // Then music in saved playlist order (or default order)
     const allAssets = [
       // Images used by letter page (cache first - smallest files)
-      'assets/images/kakashi.avif',
-      'assets/images/landscape.avif',
+      'assets/images/kakashi.jpg',
+      'assets/images/landscape.jpg',
       
       // All images used by player (cache before music)
-      'assets/images/1.avif',
-      'assets/images/2.avif',
-      'assets/images/3.avif',
-      'assets/images/4.avif',
-      'assets/images/5.avif',
-      'assets/images/6.avif',
-      'assets/images/7.avif',
-      'assets/images/8.avif',
-      'assets/images/9.avif',
-      'assets/images/16400503_v722-aum-36b.avif',
+      'assets/images/1.jpg',
+      'assets/images/2.jpg',
+      'assets/images/3.jpg',
+      'assets/images/4.jpg',
+      'assets/images/5.jpg',
+      'assets/images/6.jpg',
+      'assets/images/7.jpg',
+      'assets/images/8.jpg',
+      'assets/images/9.jpg',
+      'assets/images/16400503_v722-aum-36b.jpg',
       'assets/images/background-dark.mp4',
-      'assets/images/background.avif',
+      'assets/images/background.jpg',
       
       // Music files in saved playlist order (or default order)
       // These are larger, so cache after images

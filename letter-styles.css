@@ -1,7 +1,7 @@
 /* ================= Body & Background ================= */
 body {
     font-family: 'Merriweather', serif;
-    background: url(assets/images/landscape.avif) no-repeat center center fixed;
+    background: url(assets/images/landscape.jpg) no-repeat center center fixed;
     background-size: cover;
     min-height: 100vh;
     color: #fff;
