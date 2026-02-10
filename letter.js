@@ -124,10 +124,14 @@ function startLetterTypingAnimation() {
     // Get saved playlist order from localStorage (if exists)
     // This ensures we cache music in the user's preferred order
     let musicOrder = [];
+    let firstSongUrl = null; // last playing if available; otherwise first in playlist
     try {
       const savedState = localStorage.getItem('musicPlayerState');
       if (savedState) {
         const state = JSON.parse(savedState);
+        if (state && typeof state.currentTrackId === 'string' && state.currentTrackId) {
+          firstSongUrl = state.currentTrackId;
+        }
         if (state.displayOrder && Array.isArray(state.displayOrder)) {
           // displayOrder maps display index -> originalLibrary index
           // We need to get the audioUrl for each track in displayOrder
@@ -174,27 +178,36 @@ function startLetterTypingAnimation() {
       ];
     }
 
+    // Identify the "first song":
+    // - If user has interacted before: last playing track (currentTrackId)
+    // - Else: first song in the playlist order we will cache
+    if (!firstSongUrl) firstSongUrl = musicOrder[0] || null;
+
+    // Tell the SW what the first/priority song is, so it can cache it ASAP
+    if (firstSongUrl) {
+      sendMessageToSW({ type: 'set-preferred-music', url: firstSongUrl });
+    }
+
     // PRIORITIZE IMAGES FIRST (smaller, faster to cache)
     // Then music in saved playlist order (or default order)
     const allAssets = [
       // Images used by letter page (cache first - smallest files)
-      'assets/images/kakashi.png',
-      'assets/images/landscape.jpg',
+      'assets/images/kakashi.avif',
+      'assets/images/landscape.avif',
       
       // All images used by player (cache before music)
-      'assets/images/1.jpg',
-      'assets/images/2.jpg',
-      'assets/images/3.jpg',
-      'assets/images/4.jpg',
-      'assets/images/5.jpg',
-      'assets/images/6.jpg',
-      'assets/images/7.jpg',
-      'assets/images/8.jpg',
-      'assets/images/9.jpg',
-      'assets/images/16400503_v722-aum-36b.jpg',
-      'assets/images/2151930103.jpg',
+      'assets/images/1.avif',
+      'assets/images/2.avif',
+      'assets/images/3.avif',
+      'assets/images/4.avif',
+      'assets/images/5.avif',
+      'assets/images/6.avif',
+      'assets/images/7.avif',
+      'assets/images/8.avif',
+      'assets/images/9.avif',
+      'assets/images/16400503_v722-aum-36b.avif',
       'assets/images/background-dark.mp4',
-      'assets/images/background.png',
+      'assets/images/background.avif',
       
       // Music files in saved playlist order (or default order)
       // These are larger, so cache after images

@@ -79,7 +79,7 @@ const PRECACHE_URLS = [
   'letter.js',
   'player.js',
   // Critical assets - load really first
-  'assets/images/landscape.jpg'
+  'assets/images/landscape.avif'
 
 ];
 
@@ -298,6 +298,34 @@ async function cacheRestAssets(assets) {
     // Separate images and music - images are smaller and should be cached first
     const imageAssets = assets.filter(a => !a.startsWith('assets/music/'));
     const musicAssets = assets.filter(a => a.startsWith('assets/music/'));
+
+    // Prefetch "first song" immediately (in parallel with image caching).
+    // Definition of first song:
+    // - preferredMusicUrl if set by client (last playing / user choice)
+    // - else the first music asset in the provided order
+    const firstSongCandidates = [];
+    if (preferredMusicUrl) {
+      try {
+        const u = new URL(preferredMusicUrl, self.location.origin);
+        firstSongCandidates.push(u.pathname.replace(/^[\/]/, ''));
+      } catch (e) {
+        firstSongCandidates.push(preferredMusicUrl);
+      }
+    }
+    if (musicAssets[0]) firstSongCandidates.push(musicAssets[0]);
+    const firstSong = Array.from(new Set(firstSongCandidates)).find(Boolean);
+
+    const firstSongPrefetchPromise = (async () => {
+      if (!firstSong) return;
+      try {
+        const cached = await cacheWithRetry(musicCache, firstSong, 2);
+        if (cached) {
+          notifyClients({ level: 'info', msg: 'Prefetched first song (parallel)', url: firstSong });
+        }
+      } catch (e) {
+        // ignore
+      }
+    })();
     
     // STEP 1: Cache images first (smaller files, faster to complete)
     // Use higher concurrency for images since they're smaller
@@ -317,6 +345,8 @@ async function cacheRestAssets(assets) {
     }
     // Cache images in parallel with higher concurrency
     await Promise.all(new Array(Math.min(imageConcurrency, imageAssets.length)).fill(0).map(() => imageWorker()));
+    // Ensure the first-song prefetch is at least kicked/completed (best-effort)
+    await firstSongPrefetchPromise;
     
     // STEP 2: Cache music in the order provided (saved playlist order or default)
     // Music files are larger, so we use lower concurrency to avoid overwhelming network
