@@ -1736,6 +1736,30 @@ function updateQuoteFromSong() {
 
       // Ensure audio listeners are attached once
       attachAudioListenersOnce();
+
+      // Back to letter (index.html) button
+      const backToLetterBtn = document.getElementById('backToLetterBtn');
+      if (backToLetterBtn) {
+        backToLetterBtn.addEventListener('click', function () {
+          try {
+            // Persist current player state before navigating away
+            if (typeof savePlayerState === 'function') {
+              savePlayerState();
+            }
+            if (audioPlayer) {
+              audioPlayer.pause();
+            }
+          } catch (e) {}
+
+          // Subtle fade-out before going back to the letter
+          document.body.style.transition = 'opacity 0.4s ease';
+          document.body.style.opacity = '0';
+
+          setTimeout(() => {
+            window.location.href = 'index.html';
+          }, 350);
+        });
+      }
       
       // Power switch
       const powerSwitch = document.getElementById('powerSwitch');
