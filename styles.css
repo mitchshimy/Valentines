@@ -239,15 +239,11 @@ body[data-theme="dark"] {
       opacity: 0.45;
     }
 
-    /* Back to Letter button - overlaid on iPod */
-    .ipod-container {
-      position: relative;
-    }
 
     .back-to-letter-btn {
       position: absolute;
-      top: -10px;
-      right: -10px;
+      top: 50px;
+      left: 20px;
       z-index: 50;
       display: inline-flex;
       align-items: center;
@@ -299,7 +295,7 @@ body[data-theme="dark"] {
     @media (max-width: 768px) {
       .back-to-letter-btn {
         top: 6px;
-        right: 6px;
+        left: 6px;
         padding: 6px;
         border-radius: 999px;
         font-size: 0;
@@ -400,6 +396,7 @@ body[data-theme="dark"] {
       align-items: center;
       justify-content: center;
       height: 100%;
+      margin-bottom: 40px;
     }
 
 .ipod {
@@ -1631,6 +1628,7 @@ body[data-theme="dark"] .screen::before {
         align-items: center;
         justify-content: center;
         padding: 5%;
+        margin-bottom: 15px;
       }
       
       /* IPOD BODY - Proportional scaling */
