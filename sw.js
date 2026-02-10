@@ -3,6 +3,10 @@ const RUNTIME = 'runtime-v1';
 const BG_CACHE = 'bgcache-v1';
 const MUSIC_CACHE = 'music-v1';
 let preferredMusicUrl = null;
+// Background caching job control (so we can cancel/restart when user changes selection)
+let bgCacheJobId = 0;
+let bgCacheAbortController = null;
+let lastBgAssets = null;
 
 // Debug flag — set to false to silence runtime messages
 const SW_DEBUG = false;
@@ -225,7 +229,14 @@ self.addEventListener('message', event => {
     // prefetch and cache it into MUSIC_CACHE for immediate availability
     // persist to IndexedDB so setting survives SW restarts
     try { idbSet('preferredMusicUrl', preferredMusicUrl); } catch (e) {}
+    // Respect user decision: stop any background caching to free bandwidth,
+    // cache the selected track immediately, then (best-effort) resume using lastBgAssets.
+    try { if (bgCacheAbortController) bgCacheAbortController.abort(); } catch (e) {}
     prefetchPreferredMusic(preferredMusicUrl);
+    if (lastBgAssets && Array.isArray(lastBgAssets) && lastBgAssets.length) {
+      // Restart pipeline with same assets; caches will short-circuit already cached items.
+      cacheRestAssets(lastBgAssets);
+    }
     return;
   }
 
@@ -247,15 +258,16 @@ async function prefetchPreferredMusic(url) {
 }
 
 // Retry helper for cache operations (important for mobile reliability)
-async function cacheWithRetry(cache, url, maxRetries = 2) {
+async function cacheWithRetry(cache, url, maxRetries = 2, signal = undefined) {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
+      if (signal && signal.aborted) return false;
       // Check if already cached
       const existing = await cache.match(url);
       if (existing) return true;
       
       // Try to fetch and cache
-      const response = await fetch(url);
+      const response = await fetch(url, signal ? { signal } : undefined);
       if (response && (response.status === 200 || response.status === 206)) {
         try {
           const reqUrl = new URL(url, self.location.origin);
@@ -270,6 +282,8 @@ async function cacheWithRetry(cache, url, maxRetries = 2) {
       // If we got here, the response wasn't cacheable, but don't retry
       return false;
     } catch (e) {
+      // If aborted, stop immediately
+      if (signal && signal.aborted) return false;
       // On last attempt, give up
       if (attempt === maxRetries) {
         notifyClients({ level: 'warn', msg: 'Cache retry exhausted', url, attempts: attempt + 1 });
@@ -292,6 +306,16 @@ async function cacheRestAssets(assets) {
   }
 
   try {
+    // Record the last requested assets so we can resume after user selection changes
+    lastBgAssets = assets.slice();
+
+    // Cancel any in-progress background caching so new request becomes source of truth
+    bgCacheJobId += 1;
+    const jobId = bgCacheJobId;
+    try { if (bgCacheAbortController) bgCacheAbortController.abort(); } catch (e) {}
+    bgCacheAbortController = new AbortController();
+    const signal = bgCacheAbortController.signal;
+
     const bgCache = await caches.open(BG_CACHE);
     const musicCache = await caches.open(MUSIC_CACHE);
     
@@ -318,7 +342,9 @@ async function cacheRestAssets(assets) {
     const firstSongPrefetchPromise = (async () => {
       if (!firstSong) return;
       try {
-        const cached = await cacheWithRetry(musicCache, firstSong, 2);
+        // Only proceed if this job is still current
+        if (jobId !== bgCacheJobId || (signal && signal.aborted)) return;
+        const cached = await cacheWithRetry(musicCache, firstSong, 2, signal);
         if (cached) {
           notifyClients({ level: 'info', msg: 'Prefetched first song (parallel)', url: firstSong });
         }
@@ -333,10 +359,11 @@ async function cacheRestAssets(assets) {
     let imageIdx = 0;
     async function imageWorker() {
       while (imageIdx < imageAssets.length) {
+        if (jobId !== bgCacheJobId || (signal && signal.aborted)) return;
         const i = imageIdx++;
         const img = imageAssets[i];
         try {
-          await cacheWithRetry(bgCache, img, 1); // Single retry for images
+          await cacheWithRetry(bgCache, img, 1, signal); // Single retry for images
           notifyClients({ level: 'info', msg: 'Cached image', url: img });
         } catch (e) {
           // ignore individual failures
@@ -345,58 +372,57 @@ async function cacheRestAssets(assets) {
     }
     // Cache images in parallel with higher concurrency
     await Promise.all(new Array(Math.min(imageConcurrency, imageAssets.length)).fill(0).map(() => imageWorker()));
-    // Ensure the first-song prefetch is at least kicked/completed (best-effort)
-    await firstSongPrefetchPromise;
+
+    // If job changed while caching images, stop.
+    if (jobId !== bgCacheJobId || (signal && signal.aborted)) return;
     
     // STEP 2: Cache music in the order provided (saved playlist order or default)
-    // Music files are larger, so we use lower concurrency to avoid overwhelming network
+    // Requirement: after images are done, cache the FIRST 4 tracks immediately, then the rest.
     if (musicAssets.length > 0) {
-      // Check for preferred music (user's current track) and prioritize it
-      const priority = [];
-      if (preferredMusicUrl) {
-        try {
-          const u = new URL(preferredMusicUrl, self.location.origin);
-          const preferredPath = u.pathname.replace(/^[\/]/, '');
-          if (musicAssets.includes(preferredPath)) {
-            priority.push(preferredPath);
-          }
-        } catch (e) {
-          if (preferredMusicUrl && musicAssets.includes(preferredMusicUrl)) {
-            priority.push(preferredMusicUrl);
-          }
+      const firstFour = musicAssets.slice(0, 4);
+      const rest = musicAssets.slice(4);
+
+      // Cache first four with modest concurrency (avoid overwhelming slow networks)
+      const firstFourConcurrency = 2;
+      let firstIdx = 0;
+      async function firstFourWorker() {
+        while (firstIdx < firstFour.length) {
+          if (jobId !== bgCacheJobId || (signal && signal.aborted)) return;
+          const i = firstIdx++;
+          const m = firstFour[i];
+          try {
+            const cached = await cacheWithRetry(musicCache, m, 2, signal);
+            if (cached) {
+              notifyClients({ level: 'info', msg: 'Cached priority track (top-4)', url: m });
+            }
+          } catch (e) {}
         }
       }
-      
-      // Cache priority music first (if exists)
-      if (priority.length > 0) {
-        await Promise.all(priority.map(async m => {
-          const cached = await cacheWithRetry(musicCache, m, 2);
-          if (cached) {
-            notifyClients({ level: 'info', msg: 'Prefetched priority music', url: m });
-          }
-        }));
-      }
-      
-      // Cache remaining music in provided order (saved playlist order or default)
-      const remainingMusic = musicAssets.filter(a => !priority.includes(a));
-      const musicConcurrency = 2; // Lower concurrency for larger files
-      let musicIdx = 0;
-      async function musicWorker() {
-        while (musicIdx < remainingMusic.length) {
-          const i = musicIdx++;
-          const m = remainingMusic[i];
+      await Promise.all(new Array(Math.min(firstFourConcurrency, firstFour.length)).fill(0).map(() => firstFourWorker()));
+
+      if (jobId !== bgCacheJobId || (signal && signal.aborted)) return;
+
+      // Then cache the rest
+      const restConcurrency = 2;
+      let restIdx = 0;
+      async function restWorker() {
+        while (restIdx < rest.length) {
+          if (jobId !== bgCacheJobId || (signal && signal.aborted)) return;
+          const i = restIdx++;
+          const m = rest[i];
           try {
-            const cached = await cacheWithRetry(musicCache, m, 2);
+            const cached = await cacheWithRetry(musicCache, m, 2, signal);
             if (cached) {
               notifyClients({ level: 'info', msg: 'Cached music', url: m });
             }
-          } catch (e) {
-            // ignore individual failures
-          }
+          } catch (e) {}
         }
       }
-      await Promise.all(new Array(Math.min(musicConcurrency, remainingMusic.length)).fill(0).map(() => musicWorker()));
+      await Promise.all(new Array(Math.min(restConcurrency, rest.length)).fill(0).map(() => restWorker()));
     }
+
+    // Best-effort: wait for the parallel first-song prefetch to settle
+    try { await firstSongPrefetchPromise; } catch (e) {}
 
     // Notify clients that background caching is complete
     const allClients = await self.clients.matchAll();
