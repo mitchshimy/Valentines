@@ -353,7 +353,7 @@ async function cacheRestAssets(assets) {
     
     // STEP 1: Cache images first (smaller files, faster to complete)
     // Use higher concurrency for images since they're smaller
-    const imageConcurrency = 4;
+    const imageConcurrency = 3;
     let imageIdx = 0;
     async function imageWorker() {
       while (imageIdx < imageAssets.length) {
@@ -381,7 +381,7 @@ async function cacheRestAssets(assets) {
       const rest = musicAssets.slice(4);
 
       // Cache first four with modest concurrency (avoid overwhelming slow networks)
-      const firstFourConcurrency = 2;
+      const firstFourConcurrency = 1;
       let firstIdx = 0;
       async function firstFourWorker() {
         while (firstIdx < firstFour.length) {
@@ -401,7 +401,7 @@ async function cacheRestAssets(assets) {
       if (jobId !== bgCacheJobId || (signal && signal.aborted)) return;
 
       // Then cache the rest
-      const restConcurrency = 2;
+      const restConcurrency = 1;
       let restIdx = 0;
       async function restWorker() {
         while (restIdx < rest.length) {
