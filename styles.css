@@ -1806,10 +1806,10 @@ body[data-theme="dark"] .screen::before {
          font-family: var(--font-serif);
         font-size: clamp(1.1rem, 4vw, 1.4rem) !important;
         text-align: center;
-        color: #9370DB !important;
+        color: #ebe3fa !important;
       }
       
-      /* Purple heart in author (no blinking) */
+      /* Purple heart in author */
       .ipod-quote-author .cursor {
         color: #9370DB !important;
         display: inline-block;
@@ -2367,7 +2367,7 @@ body[data-theme="dark"] .ipod-quote-text {
 }
 
 body[data-theme="dark"] .ipod-quote-author {
-  color: rgba(255, 255, 255, 0.8);
+  color: #ebe3fa;
 }
 
 body[data-theme="dark"] .typing-indicator {

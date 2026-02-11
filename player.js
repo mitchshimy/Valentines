@@ -101,8 +101,8 @@
         image: "assets/images/9.jpg",
         cardValue: "7",
         cardSuit: "♥",
-        quote: "I hate to see her go but I love to watch her leave",
-        quoteAuthor: "Lil Wayne"
+        quote: "Pretty girl with a body weh would a mad anybody",
+        quoteAuthor: "Alkaline"
       },
     ];
 
